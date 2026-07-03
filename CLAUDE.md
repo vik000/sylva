@@ -253,6 +253,26 @@ Never: silent corruption, undefined behaviour, unlogged failures.
 
 ### Epic 4 — Richer Graph Queries + Visualisation
 
+#### Feature 4.0 — Populate the edges table (call/import relationships)
+- Description: Write `calls` and `imports` edges into the graph so relationships
+  exist to traverse. Prerequisite for all of Epic 4 (4.1–4.5) and makes
+  Feature 1.6's `get_callers` / `get_dependencies` return real data. Sequence
+  this BEFORE Feature 4.1, which assumes call edges already exist. (Tracks GitHub issue #27.)
+- Inputs: db path (edges are derived during/after symbol writing)
+- Process: Two halves, each independently testable —
+  - Import edges: extractor reports import targets; writer resolves each target
+    name to a symbol already in the graph (cross-file) and inserts an `imports` edge.
+  - Call edges: extractor captures call sites; writer resolves each callee name
+    to a symbol id and inserts a `calls` edge (document resolution limits:
+    same-name collisions, unresolved external calls).
+- Outputs: `calls` / `imports` rows present in `edges` after indexing;
+  `get_dependencies` and `get_callers` return real results
+- Testing:
+  - General: `a()` calling `b()` yields edge a→b; import of a known symbol yields an `imports` edge
+  - Edge: recursive/self-call handled; re-index is idempotent (no duplicate edges)
+  - Negative: import/call to an unindexed target is skipped, not an error
+  - Error control: unresolved reference logged and skipped, never a crash or a dangling edge
+
 #### Feature 4.1 — Call chain tracing
 - Description: Traverse inbound/outbound call edges to N depth
 - Inputs: symbol name, direction (inbound|outbound|both), max depth
