@@ -50,6 +50,11 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX IF NOT EXISTS idx_edges_dst   ON edges(dst_id);
     CREATE INDEX IF NOT EXISTS idx_edges_kind  ON edges(kind);
     "#,
+    // v2 — enforce edge uniqueness so repeated indexing / test-mapping is
+    // idempotent (Feature 3.3, and future call/import edges in Feature 4.0).
+    r#"
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_edges_unique ON edges(src_id, dst_id, kind);
+    "#,
 ];
 
 /// Apply any migrations the database has not yet seen, inside a single

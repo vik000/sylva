@@ -80,8 +80,8 @@ class TestGeneral:
     def test_schema_version_recorded(self, tmp_path):
         db = tmp_path / "sylva.db"
         sylva.init_db(str(db))
-        # Exactly one migration has shipped so far.
-        assert _user_version(db) == 1
+        # Migrations shipped: v1 (initial schema), v2 (unique edge index — 3.3).
+        assert _user_version(db) == 2
 
     def test_creates_db_in_cwd_without_parent(self, tmp_path, monkeypatch):
         # A bare filename (no directory component) must not error on the

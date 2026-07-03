@@ -180,7 +180,7 @@ pub fn parse_coverage(py: Python<'_>, path: &str, format: &str) -> PyResult<Py<P
 
 /// Split a path into its non-empty components, tolerating both separators and
 /// dropping `.` segments, so absolute and relative paths compare cleanly.
-fn components(path: &str) -> Vec<&str> {
+pub(crate) fn components(path: &str) -> Vec<&str> {
     path.split(['/', '\\'])
         .filter(|c| !c.is_empty() && *c != ".")
         .collect()
@@ -189,7 +189,7 @@ fn components(path: &str) -> Vec<&str> {
 /// True if one component list is a suffix of the other (component-boundary
 /// aware, so `foo.py` never matches `barfoo.py`). This lets a report path like
 /// `src/foo.py` reconcile with a graph path like `/repo/src/foo.py`.
-fn suffix_match(a: &[&str], b: &[&str]) -> bool {
+pub(crate) fn suffix_match(a: &[&str], b: &[&str]) -> bool {
     if a.is_empty() || b.is_empty() {
         return false;
     }
