@@ -428,3 +428,79 @@ Never: silent corruption, undefined behaviour, unlogged failures.
   - Edge: empty graph exports as valid empty structure, large graph exports without timeout
   - Negative: unknown format raises ValueError, unwritable output path raises error
   - Error control: partial export failure cleans up partial file
+
+---
+
+### Epic 7 — Tech Debt & Hardening
+
+Cross-cutting cleanups and hardening surfaced during Epics 1–2: coverage gaps,
+small correctness races, protocol upgrades, and CI improvements. Non-blocking —
+these group deferred notes so they are tracked, not lost. (GitHub milestone #7.)
+
+#### Feature 7.1 — Populate symbols.line_end
+- Surfaced in: Features 1.4 (extractor) / 1.5 (writer)
+- Description: The `symbols` table has `line_start` and `line_end`, but the
+  extractor only reports a single start `line`, so `line_end` is always NULL.
+- Process: `extract_symbols` also reports each definition's end line
+  (`node.end_position()`); the dict carries `line_end`; `write_symbols` persists it.
+- Outputs: symbols have a correct `line_end`; span-based features (3.2 coverage,
+  visualisation) can rely on it
+- Testing:
+  - General: multi-line function reports correct line_start/line_end
+  - Edge: single-line def has start == end; nested defs get their own spans
+
+#### Feature 7.2 — Checkpoint the exact indexed hash (close mark_indexed re-hash race)
+- Surfaced in: Features 2.1 (file hash tracking) / 2.2 (watcher)
+- Description: `mark_indexed` re-reads and re-hashes the file. If the file
+  changes between the index write and the checkpoint, it stores the hash of the
+  new content while the graph holds the old symbols — the next run then skips a
+  file that was never indexed at its current state.
+- Process: thread the exact hash computed at index time through to the
+  checkpoint (e.g. `file_needs_reindex` returns (decision, hash), or
+  `mark_indexed(db, path, hash)`), so we store the hash of what was actually indexed.
+- Outputs: modifying the file mid-index leaves it flagged for reindex
+- Testing:
+  - General: normal path still idempotent
+  - Edge: change between index and checkpoint keeps the file flagged
+  - Note: low-severity (the 2.2 watcher re-fires on the next change), but real
+
+#### Feature 7.3 — Test watcher loop resilience to mid-loop errors
+- Surfaced in: Feature 2.2 (file watcher)
+- Description: The "errors logged, watcher recovers" guarantee is currently true
+  by construction (`process_path` logs and continues) but not proven by a test
+  that forces a failure inside the running loop.
+- Process: induce a reindex/delete failure for one event, then verify a
+  subsequent valid event is still processed and the watcher thread is alive.
+- Outputs: end-to-end proof the loop survives an in-flight error
+- Testing:
+  - General: after an induced error on one path, a later create/modify on
+    another path still indexes
+  - Error control: watcher thread remains alive after the error
+
+#### Feature 7.4 — Real MCP protocol handshake (initialize / tools/list / tools/call)
+- Surfaced in: Feature 1.6 (MCP server)
+- Description: The server speaks plain JSON-RPC (one method per tool), which
+  matches the 1.6 spec and is tested, but real MCP clients (Claude Code, Cursor)
+  expect MCP framing: an `initialize` handshake, `tools/list` discovery, and
+  `tools/call` with a tool-name + arguments envelope.
+- Process: layer MCP framing over the existing `handle_request` dispatch —
+  implement `initialize`, `tools/list` (advertise the 3 tools + input schemas),
+  and route `tools/call` to the current handlers.
+- Outputs: the server interoperates with a real MCP client
+- Testing:
+  - General: `initialize` returns capabilities; `tools/list` lists tools with
+    schemas; `tools/call` dispatches correctly
+  - Negative: unknown tool in `tools/call` returns a proper error
+
+#### Feature 7.5 — CI hardening: Python version matrix + caching
+- Surfaced in: scaffold / ongoing
+- Description: CI builds once on Python 3.12 with no dependency caching and no
+  OS/Python matrix. The wheel is abi3-py39 and the watcher (2.2) is
+  OS-dependent, so cross-platform/version coverage matters.
+- Process: add a Python version matrix (3.9–3.13) and optionally an OS matrix
+  (ubuntu + macos); cache cargo (`~/.cargo`, `target/`) and pip; decide whether
+  to commit `Cargo.lock` (currently gitignored) for reproducible CI.
+- Outputs: CI green across the matrix; faster builds via caching
+- Testing:
+  - General: CI passes across the matrix
+  - Error control: build time reduced by caching
