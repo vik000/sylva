@@ -226,9 +226,19 @@ Never: silent corruption, undefined behaviour, unlogged failures.
 - Inputs: db path, coverage dict from Feature 3.1
 - Process: For each symbol, check which of its lines are covered; compute coverage %
 - Outputs: `sylva.apply_coverage(db_path, coverage)` — updates symbol records in DB
+- Design note — path reconciliation (see issue #33): the coverage dict from
+  Feature 3.1 is keyed by the paths *inside the report* (e.g. `src/foo.py`,
+  relative to where coverage ran), while the graph's `files.path` holds whatever
+  the walker produced (often absolute). These two path spaces must be reconciled
+  (normalise/relativise, or match by suffix) or coverage will silently attach to
+  no symbols. This must be handled here, with tests for the relative-vs-absolute
+  and differing-root cases. Also depends on symbol spans — see Feature 7.1
+  (`line_end`, issue #28) for accurate boundary matching.
 - Testing:
   - General: symbol spanning covered lines gets correct %, uncovered symbol gets 0%
   - Edge: symbol with no lines in coverage report gets null (not 0%), partial coverage
+  - Path reconciliation: relative report path matches an absolute graph path;
+    differing roots handled; genuinely unrelated path attaches to nothing
   - Negative: symbol not in DB is skipped without error
   - Error control: DB update failure rolls back per-symbol, not full batch
 
