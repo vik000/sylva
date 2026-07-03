@@ -20,6 +20,7 @@ use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
 use rusqlite::{params, Connection};
 use std::collections::HashMap;
+use std::path::Path;
 
 type Coverage = HashMap<String, HashMap<i64, bool>>;
 
@@ -373,4 +374,105 @@ pub fn apply_coverage(db_path: &str, coverage: &Bound<'_, PyDict>) -> PyResult<u
     }
 
     Ok(updated)
+}
+
+// --------------------------------------------------------------------------- //
+// Feature 3.4 — module (per-file) coverage rollup
+// --------------------------------------------------------------------------- //
+
+/// Running aggregate for one file's coverage.
+#[derive(Default)]
+struct Rollup {
+    weighted_sum: f64,
+    total_weight: f64,
+    excluded: usize, // real symbols dropped for having NULL coverage
+}
+
+/// Aggregate symbol-level coverage into a per-file (module) total.
+///
+/// Each file's percentage is the line-span-weighted average of its symbols'
+/// `coverage_pct`: `Σ(pct × lines) / Σ(lines)`, where `lines` is
+/// `line_end - line_start + 1` (Feature 7.1). Symbols with NULL coverage are
+/// excluded from the average (and a per-file warning is logged). A file whose
+/// symbols are all NULL — or which has no symbols at all — maps to `None`,
+/// preserving the "no data" vs "0% covered" distinction.
+///
+/// Returns `{ file_path: pct_or_None }` for every indexed file. Raises if the
+/// database does not exist.
+#[pyfunction]
+pub fn get_module_coverage(py: Python<'_>, db_path: &str) -> PyResult<Py<PyDict>> {
+    if !Path::new(db_path).exists() {
+        return Err(PyFileNotFoundError::new_err(format!(
+            "database not found: '{}'",
+            db_path
+        )));
+    }
+
+    let conn = Connection::open(db_path)
+        .map_err(|e| PyOSError::new_err(format!("cannot open database '{}': {}", db_path, e)))?;
+
+    // LEFT JOIN so files with zero symbols still appear (with a NULL symbol id).
+    let mut stmt = conn
+        .prepare(
+            "SELECT f.path, s.id, s.coverage_pct, s.line_start, s.line_end \
+             FROM files f LEFT JOIN symbols s ON s.file_id = f.id",
+        )
+        .map_err(|e| PyRuntimeError::new_err(format!("failed to read coverage: {}", e)))?;
+
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, Option<i64>>(1)?,   // symbol id (NULL => file has no symbols)
+                r.get::<_, Option<f64>>(2)?,   // coverage_pct
+                r.get::<_, Option<i64>>(3)?,   // line_start
+                r.get::<_, Option<i64>>(4)?,   // line_end
+            ))
+        })
+        .map_err(|e| PyRuntimeError::new_err(format!("failed to read coverage: {}", e)))?;
+
+    let mut acc: HashMap<String, Rollup> = HashMap::new();
+    for row in rows {
+        let (path, sym_id, pct, line_start, line_end) =
+            row.map_err(|e| PyRuntimeError::new_err(format!("failed to read coverage: {}", e)))?;
+
+        // Ensure every file has an entry, even with no contributing symbols.
+        let entry = acc.entry(path).or_default();
+
+        // A NULL symbol id is the phantom LEFT JOIN row for a file with no
+        // symbols — the entry above records the file; there's nothing to count.
+        if sym_id.is_none() {
+            continue;
+        }
+
+        match pct {
+            Some(pct) => {
+                let weight = match line_start {
+                    Some(start) => (line_end.unwrap_or(start) - start + 1).max(1),
+                    None => 1,
+                } as f64;
+                entry.weighted_sum += pct * weight;
+                entry.total_weight += weight;
+            }
+            None => entry.excluded += 1,
+        }
+    }
+
+    let out = PyDict::new(py);
+    for (path, rollup) in acc {
+        if rollup.excluded > 0 {
+            eprintln!(
+                "sylva: file '{}': {} symbol(s) excluded from coverage rollup (no coverage data)",
+                path, rollup.excluded
+            );
+        }
+        let value: Option<f64> = if rollup.total_weight > 0.0 {
+            Some(rollup.weighted_sum / rollup.total_weight)
+        } else {
+            None
+        };
+        out.set_item(path, value)?;
+    }
+
+    Ok(out.unbind())
 }
