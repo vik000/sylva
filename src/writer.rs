@@ -1,6 +1,6 @@
 //! Graph writer — persists extracted symbols into the SQLite graph.
 //!
-//! Consumes the `{name, kind, line, docstring}` dicts produced by the
+//! Consumes the `{name, kind, line, line_end, docstring}` dicts produced by the
 //! extractor (Feature 1.4) and writes them into the `files` / `symbols` tables
 //! defined by the schema (Feature 1.2). The database must already be
 //! initialised via `init_db`.
@@ -23,12 +23,12 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use rusqlite::{params, Connection};
 
-/// A symbol row ready to insert. `line_end` is not provided by the extractor
-/// yet, so it is always stored NULL for now.
+/// A symbol row ready to insert.
 struct Row {
     name: String,
     kind: String,
     line_start: Option<i64>,
+    line_end: Option<i64>,
     docstring: Option<String>,
 }
 
@@ -93,6 +93,7 @@ pub fn write_symbols(
             name: required_str(dict, "name")?,
             kind,
             line_start: optional_int(dict, "line")?,
+            line_end: optional_int(dict, "line_end")?,
             docstring: optional_str(dict, "docstring")?,
         });
     }
@@ -128,16 +129,23 @@ pub fn write_symbols(
     {
         let mut stmt = tx
             .prepare(
-                "INSERT INTO symbols (file_id, name, kind, line_start, docstring) \
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                "INSERT INTO symbols (file_id, name, kind, line_start, line_end, docstring) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             )
             .map_err(|e| PyRuntimeError::new_err(format!("failed to prepare insert: {}", e)))?;
 
         for row in &rows {
-            stmt.execute(params![file_id, row.name, row.kind, row.line_start, row.docstring])
-                .map_err(|e| {
-                    PyRuntimeError::new_err(format!("failed to write symbol '{}': {}", row.name, e))
-                })?;
+            stmt.execute(params![
+                file_id,
+                row.name,
+                row.kind,
+                row.line_start,
+                row.line_end,
+                row.docstring
+            ])
+            .map_err(|e| {
+                PyRuntimeError::new_err(format!("failed to write symbol '{}': {}", row.name, e))
+            })?;
             count += 1;
         }
     }

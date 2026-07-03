@@ -1,7 +1,7 @@
 //! Python AST extractor.
 //!
 //! Parses a `.py` file with tree-sitter and extracts its symbols — functions,
-//! classes, and imports — each as a dict `{name, kind, line, docstring}`.
+//! classes, and imports — each as a dict `{name, kind, line, line_end, docstring}`.
 //!
 //! Robustness (per project rules): a missing file is rejected with
 //! `FileNotFoundError`; a non-UTF-8 (binary) file is rejected with a clear
@@ -21,6 +21,7 @@ struct Symbol {
     name: String,
     kind: &'static str,
     line: usize,
+    line_end: usize,
     docstring: Option<String>,
 }
 
@@ -73,6 +74,9 @@ fn strip_quotes(s: &str) -> String {
 /// `name` field; `from x import *` is captured as a `wildcard_import` child.
 fn collect_imports(node: Node, src: &[u8], out: &mut Vec<Symbol>) {
     let line = node.start_position().row + 1;
+    // An import statement usually occupies one line, but a parenthesised
+    // `from x import (a, b)` can span several; use the statement's own extent.
+    let line_end = node.end_position().row + 1;
 
     let mut cursor = node.walk();
     for child in node.children_by_field_name("name", &mut cursor) {
@@ -86,14 +90,14 @@ fn collect_imports(node: Node, src: &[u8], out: &mut Vec<Symbol>) {
             _ => Some(node_text(child, src)),
         };
         if let Some(name) = name {
-            out.push(Symbol { name, kind: "import", line, docstring: None });
+            out.push(Symbol { name, kind: "import", line, line_end, docstring: None });
         }
     }
 
     let mut wc = node.walk();
     for child in node.children(&mut wc) {
         if child.kind() == "wildcard_import" {
-            out.push(Symbol { name: "*".to_string(), kind: "import", line, docstring: None });
+            out.push(Symbol { name: "*".to_string(), kind: "import", line, line_end, docstring: None });
         }
     }
 }
@@ -116,6 +120,7 @@ fn collect(node: Node, src: &[u8], out: &mut Vec<Symbol>, err_line: &mut Option<
                         name: node_text(name, src),
                         kind: "function",
                         line: child.start_position().row + 1,
+                        line_end: child.end_position().row + 1,
                         docstring: get_docstring(child, src),
                     });
                 }
@@ -126,6 +131,7 @@ fn collect(node: Node, src: &[u8], out: &mut Vec<Symbol>, err_line: &mut Option<
                         name: node_text(name, src),
                         kind: "class",
                         line: child.start_position().row + 1,
+                        line_end: child.end_position().row + 1,
                         docstring: get_docstring(child, src),
                     });
                 }
@@ -142,9 +148,10 @@ fn collect(node: Node, src: &[u8], out: &mut Vec<Symbol>, err_line: &mut Option<
 }
 
 /// Parse `path` and return a list of symbol dicts, each with keys
-/// `name`, `kind` (`function` | `class` | `import`), `line` (1-based), and
-/// `docstring` (str or None). If the parse is incomplete, a trailing
-/// `{"kind": "error", ...}` dict is appended after the partial results.
+/// `name`, `kind` (`function` | `class` | `import`), `line` (1-based start),
+/// `line_end` (1-based end), and `docstring` (str or None). If the parse is
+/// incomplete, a trailing `{"kind": "error", ...}` dict is appended after the
+/// partial results.
 #[pyfunction]
 pub fn extract_symbols(py: Python<'_>, path: &str) -> PyResult<Py<PyList>> {
     let bytes = std::fs::read(path).map_err(|e| {
@@ -181,6 +188,7 @@ pub fn extract_symbols(py: Python<'_>, path: &str) -> PyResult<Py<PyList>> {
         d.set_item("name", s.name)?;
         d.set_item("kind", s.kind)?;
         d.set_item("line", s.line)?;
+        d.set_item("line_end", s.line_end)?;
         d.set_item("docstring", s.docstring)?;
         list.append(d)?;
     }
@@ -190,6 +198,7 @@ pub fn extract_symbols(py: Python<'_>, path: &str) -> PyResult<Py<PyList>> {
         d.set_item("name", "parse_error")?;
         d.set_item("kind", "error")?;
         d.set_item("line", line)?;
+        d.set_item("line_end", line)?;
         d.set_item("docstring", Option::<String>::None)?;
         list.append(d)?;
     }

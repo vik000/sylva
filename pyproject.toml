@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "sylva"
-version = "1.4.0"
+version = "1.5.0"
 requires-python = ">=3.9"
 description = "Codebase knowledge graph — AST parsing, SQLite graph, MCP server"
 
