@@ -13,11 +13,12 @@
 //!   filename, a `DA` outside any file section) are *explicitly ignored* —
 //!   logged and skipped — so one bad line never discards a whole report.
 
-use pyo3::exceptions::{PyFileNotFoundError, PyValueError};
+use pyo3::exceptions::{PyFileNotFoundError, PyOSError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
+use rusqlite::{params, Connection};
 use std::collections::HashMap;
 
 type Coverage = HashMap<String, HashMap<i64, bool>>;
@@ -171,4 +172,205 @@ pub fn parse_coverage(py: Python<'_>, path: &str, format: &str) -> PyResult<Py<P
         out.set_item(file, inner)?;
     }
     Ok(out.unbind())
+}
+
+// --------------------------------------------------------------------------- //
+// Feature 3.2 — correlate coverage to symbols
+// --------------------------------------------------------------------------- //
+
+/// Split a path into its non-empty components, tolerating both separators and
+/// dropping `.` segments, so absolute and relative paths compare cleanly.
+fn components(path: &str) -> Vec<&str> {
+    path.split(['/', '\\'])
+        .filter(|c| !c.is_empty() && *c != ".")
+        .collect()
+}
+
+/// True if one component list is a suffix of the other (component-boundary
+/// aware, so `foo.py` never matches `barfoo.py`). This lets a report path like
+/// `src/foo.py` reconcile with a graph path like `/repo/src/foo.py`.
+fn suffix_match(a: &[&str], b: &[&str]) -> bool {
+    if a.is_empty() || b.is_empty() {
+        return false;
+    }
+    let (short, long) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+    long.ends_with(short)
+}
+
+/// Pull the Python `{file: {line: covered}}` dict into Rust.
+fn extract_coverage(coverage: &Bound<'_, PyDict>) -> PyResult<Coverage> {
+    let mut out: Coverage = HashMap::new();
+    for (key, value) in coverage.iter() {
+        let file: String = key.extract().map_err(|_| {
+            PyValueError::new_err("coverage keys must be file-path strings")
+        })?;
+        let inner = value.downcast::<PyDict>().map_err(|_| {
+            PyValueError::new_err(format!("coverage value for '{}' must be a dict", file))
+        })?;
+        let mut lines = HashMap::new();
+        for (lk, lv) in inner.iter() {
+            let line: i64 = lk.extract().map_err(|_| {
+                PyValueError::new_err("coverage line numbers must be ints")
+            })?;
+            let covered: bool = lv.extract().map_err(|_| {
+                PyValueError::new_err("coverage line values must be bools")
+            })?;
+            lines.insert(line, covered);
+        }
+        out.insert(file, lines);
+    }
+    Ok(out)
+}
+
+/// Reconcile each report file to a single graph file id, using exact match
+/// first and falling back to a unique suffix match. Report paths that match no
+/// graph file, or ambiguously match several, are logged and skipped.
+fn reconcile<'a>(
+    cov: &'a Coverage,
+    files: &[(i64, String)],
+) -> HashMap<i64, &'a HashMap<i64, bool>> {
+    let mut mapping: HashMap<i64, &HashMap<i64, bool>> = HashMap::new();
+
+    for (report_path, lines) in cov {
+        let report_components = components(report_path);
+        let matches: Vec<&(i64, String)> = files
+            .iter()
+            .filter(|(_, graph)| suffix_match(&components(graph), &report_components))
+            .collect();
+
+        let chosen = match matches.len() {
+            0 => {
+                eprintln!(
+                    "sylva: coverage path '{}' matches no indexed file; skipping",
+                    report_path
+                );
+                None
+            }
+            1 => Some(matches[0]),
+            _ => {
+                // Prefer an exact string match if there is exactly one.
+                let exact: Vec<_> = matches.iter().filter(|(_, g)| g == report_path).collect();
+                if exact.len() == 1 {
+                    Some(*exact[0])
+                } else {
+                    eprintln!(
+                        "sylva: coverage path '{}' ambiguously matches {} indexed files; skipping",
+                        report_path,
+                        matches.len()
+                    );
+                    None
+                }
+            }
+        };
+
+        if let Some((file_id, _)) = chosen {
+            mapping.insert(*file_id, lines);
+        }
+    }
+
+    mapping
+}
+
+/// Coverage percentage for a symbol spanning `[start, end]`, given a file's
+/// line→covered map. `None` when no reported (executable) line falls in the
+/// span — distinct from `Some(0.0)`, which means "has reported lines, none
+/// covered".
+fn symbol_pct(lines: &HashMap<i64, bool>, start: i64, end: i64) -> Option<f64> {
+    let mut total = 0i64;
+    let mut covered = 0i64;
+    for (&line, &is_covered) in lines {
+        if line >= start && line <= end {
+            total += 1;
+            if is_covered {
+                covered += 1;
+            }
+        }
+    }
+    if total == 0 {
+        None
+    } else {
+        Some(covered as f64 / total as f64 * 100.0)
+    }
+}
+
+/// Correlate parsed coverage onto the graph's symbols, writing each symbol's
+/// `coverage_pct`. Report files are matched to graph files by path suffix (see
+/// `reconcile`); each symbol's covered/total is computed over its
+/// `line_start..line_end` span (Feature 7.1). A symbol whose span has no
+/// reported lines is set to NULL, not 0.
+///
+/// Returns the number of symbols assigned a numeric percentage (symbols set to
+/// NULL, and files not present in the report, are not counted). Each symbol is
+/// updated independently, so a failure on one is logged and skipped without
+/// aborting the rest.
+///
+/// Known limitations (tracked in issue #34): if two report entries suffix-match
+/// the *same* graph file, the last one wins nondeterministically; and coverage
+/// is not reset for files absent from a later report (stale values persist).
+#[pyfunction]
+pub fn apply_coverage(db_path: &str, coverage: &Bound<'_, PyDict>) -> PyResult<usize> {
+    let cov = extract_coverage(coverage)?;
+
+    let conn = Connection::open(db_path)
+        .map_err(|e| PyOSError::new_err(format!("cannot open database '{}': {}", db_path, e)))?;
+
+    // Load the graph's file records once.
+    let files: Vec<(i64, String)> = {
+        let mut stmt = conn
+            .prepare("SELECT id, path FROM files")
+            .map_err(|e| PyRuntimeError::new_err(format!("failed to read files: {}", e)))?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+            .map_err(|e| PyRuntimeError::new_err(format!("failed to read files: {}", e)))?;
+        rows.collect::<Result<_, _>>()
+            .map_err(|e| PyRuntimeError::new_err(format!("failed to read files: {}", e)))?
+    };
+
+    let mapping = reconcile(&cov, &files);
+
+    let mut updated = 0usize;
+    for (file_id, lines) in &mapping {
+        // Collect this file's symbols first (statement dropped before updates).
+        let symbols: Vec<(i64, Option<i64>, Option<i64>)> = {
+            let mut stmt = conn
+                .prepare("SELECT id, line_start, line_end FROM symbols WHERE file_id = ?1")
+                .map_err(|e| PyRuntimeError::new_err(format!("failed to read symbols: {}", e)))?;
+            let rows = stmt
+                .query_map(params![file_id], |r| {
+                    Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?, r.get::<_, Option<i64>>(2)?))
+                })
+                .map_err(|e| PyRuntimeError::new_err(format!("failed to read symbols: {}", e)))?;
+            rows.collect::<Result<_, _>>()
+                .map_err(|e| PyRuntimeError::new_err(format!("failed to read symbols: {}", e)))?
+        };
+
+        for (sym_id, line_start, line_end) in symbols {
+            // Without a start line we cannot correlate; leave it untouched.
+            let start = match line_start {
+                Some(s) => s,
+                None => continue,
+            };
+            let end = line_end.unwrap_or(start);
+            let pct = symbol_pct(lines, start, end);
+
+            // Per-symbol update — a single failure is isolated and logged, the
+            // batch continues.
+            match conn.execute(
+                "UPDATE symbols SET coverage_pct = ?1 WHERE id = ?2",
+                params![pct, sym_id],
+            ) {
+                Ok(_) => {
+                    if pct.is_some() {
+                        updated += 1;
+                    }
+                }
+                Err(e) => eprintln!(
+                    "sylva: failed to set coverage for symbol id {}: {}",
+                    sym_id, e
+                ),
+            }
+        }
+    }
+
+    Ok(updated)
 }

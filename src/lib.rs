@@ -23,5 +23,6 @@ fn sylva(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(watcher::start_watcher, m)?)?;
     m.add_class::<watcher::WatcherHandle>()?;
     m.add_function(wrap_pyfunction!(coverage::parse_coverage, m)?)?;
+    m.add_function(wrap_pyfunction!(coverage::apply_coverage, m)?)?;
     Ok(())
 }
