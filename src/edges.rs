@@ -22,10 +22,11 @@
 //! shadowing model; and genuinely-colliding names are skipped rather than
 //! disambiguated. Type-aware resolution is future work.
 
-use pyo3::exceptions::{PyOSError, PyRuntimeError};
+use pyo3::exceptions::{PyOSError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::types::{PyDict, PyList};
 use rusqlite::{params, Connection};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use tree_sitter::{Node, Parser};
 
@@ -228,4 +229,155 @@ pub fn build_edges(db_path: &str) -> PyResult<usize> {
         .map_err(|e| PyRuntimeError::new_err(format!("failed to commit edges: {}", e)))?;
 
     Ok(written)
+}
+
+// --------------------------------------------------------------------------- //
+// Feature 4.1 — call chain tracing
+// --------------------------------------------------------------------------- //
+
+/// Breadth-first traversal from `start` over an adjacency map, up to `max_depth`
+/// hops. Nodes are visited once (cycle-safe), and each newly-reached node is
+/// pushed to `out` as `(id, depth, direction)`.
+fn bfs(
+    start: &[i64],
+    adjacency: &HashMap<i64, Vec<i64>>,
+    max_depth: i64,
+    direction: &'static str,
+    out: &mut Vec<(i64, i64, &'static str)>,
+) {
+    let mut visited: HashSet<i64> = start.iter().copied().collect();
+    let mut frontier: Vec<i64> = start.to_vec();
+    let mut depth = 1;
+    while depth <= max_depth && !frontier.is_empty() {
+        let mut next = Vec::new();
+        for node in &frontier {
+            if let Some(neighbors) = adjacency.get(node) {
+                for &nb in neighbors {
+                    if visited.insert(nb) {
+                        out.push((nb, depth, direction));
+                        next.push(nb);
+                    }
+                }
+            }
+        }
+        frontier = next;
+        depth += 1;
+    }
+}
+
+/// Trace call chains from `symbol` over `calls` edges.
+///
+/// `direction`: `outbound` (callees), `inbound` (callers), or `both`. `depth` is
+/// a strict cap on the number of hops. Returns a flat list of reached symbols as
+/// `{name, kind, file, line, depth, direction}`, where `depth` 0 is the start
+/// symbol itself (direction `self`). An unknown symbol yields an empty list; an
+/// invalid direction or negative depth raises `ValueError`.
+#[pyfunction]
+pub fn trace_calls(
+    py: Python<'_>,
+    db_path: &str,
+    symbol: &str,
+    direction: &str,
+    depth: i64,
+) -> PyResult<Py<PyList>> {
+    // Validate arguments first, before any DB work.
+    if !matches!(direction, "inbound" | "outbound" | "both") {
+        return Err(PyValueError::new_err(format!(
+            "invalid direction '{}': expected 'inbound', 'outbound', or 'both'",
+            direction
+        )));
+    }
+    if depth < 0 {
+        return Err(PyValueError::new_err("depth must be >= 0"));
+    }
+    if !Path::new(db_path).exists() {
+        return Err(PyOSError::new_err(format!("database not found: '{}'", db_path)));
+    }
+
+    let conn = Connection::open(db_path)
+        .map_err(|e| PyOSError::new_err(format!("cannot open database '{}': {}", db_path, e)))?;
+
+    // Symbol details for the output, and name → ids for the start set.
+    let mut detail: HashMap<i64, (String, String, Option<i64>, String)> = HashMap::new();
+    let mut name_to_ids: HashMap<String, Vec<i64>> = HashMap::new();
+    {
+        let mut stmt = conn
+            .prepare(
+                "SELECT s.id, s.name, s.kind, s.line_start, f.path \
+                 FROM symbols s JOIN files f ON f.id = s.file_id",
+            )
+            .map_err(|e| PyRuntimeError::new_err(format!("failed to read symbols: {}", e)))?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, Option<i64>>(3)?,
+                    r.get::<_, String>(4)?,
+                ))
+            })
+            .map_err(|e| PyRuntimeError::new_err(format!("failed to read symbols: {}", e)))?;
+        for row in rows {
+            let (id, name, kind, line, path) =
+                row.map_err(|e| PyRuntimeError::new_err(format!("failed to read symbols: {}", e)))?;
+            name_to_ids.entry(name.clone()).or_default().push(id);
+            detail.insert(id, (name, kind, line, path));
+        }
+    }
+
+    let start_ids: Vec<i64> = name_to_ids.get(symbol).cloned().unwrap_or_default();
+    if start_ids.is_empty() {
+        return Ok(PyList::empty(py).unbind()); // unknown symbol -> empty, not error
+    }
+
+    // Build call adjacency in both directions.
+    let mut outgoing: HashMap<i64, Vec<i64>> = HashMap::new();
+    let mut incoming: HashMap<i64, Vec<i64>> = HashMap::new();
+    {
+        let mut stmt = conn
+            .prepare("SELECT src_id, dst_id FROM edges WHERE kind = 'calls'")
+            .map_err(|e| PyRuntimeError::new_err(format!("failed to read edges: {}", e)))?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))
+            .map_err(|e| PyRuntimeError::new_err(format!("failed to read edges: {}", e)))?;
+        for row in rows {
+            let (src, dst) =
+                row.map_err(|e| PyRuntimeError::new_err(format!("failed to read edges: {}", e)))?;
+            outgoing.entry(src).or_default().push(dst);
+            incoming.entry(dst).or_default().push(src);
+        }
+    }
+
+    let mut reached: Vec<(i64, i64, &'static str)> = Vec::new();
+    for &id in &start_ids {
+        reached.push((id, 0, "self"));
+    }
+    if direction == "outbound" || direction == "both" {
+        bfs(&start_ids, &outgoing, depth, "outbound", &mut reached);
+    }
+    if direction == "inbound" || direction == "both" {
+        bfs(&start_ids, &incoming, depth, "inbound", &mut reached);
+    }
+
+    // Deterministic order: by depth, then name, then direction.
+    reached.sort_by(|a, b| {
+        let name_a = detail.get(&a.0).map(|d| d.0.as_str()).unwrap_or("");
+        let name_b = detail.get(&b.0).map(|d| d.0.as_str()).unwrap_or("");
+        a.1.cmp(&b.1).then(name_a.cmp(name_b)).then(a.2.cmp(b.2))
+    });
+
+    let list = PyList::empty(py);
+    for (id, node_depth, node_dir) in reached {
+        let (name, kind, line, path) = detail.get(&id).expect("id came from detail");
+        let d = PyDict::new(py);
+        d.set_item("name", name)?;
+        d.set_item("kind", kind)?;
+        d.set_item("file", path)?;
+        d.set_item("line", *line)?;
+        d.set_item("depth", node_depth)?;
+        d.set_item("direction", node_dir)?;
+        list.append(d)?;
+    }
+    Ok(list.unbind())
 }
