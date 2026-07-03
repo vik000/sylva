@@ -533,3 +533,20 @@ these group deferred notes so they are tracked, not lost. (GitHub milestone #7.)
   - (B) re-apply a report missing a previously-covered file → stale handled
 - Note: per-symbol error isolation in `apply_coverage` is structural/untested —
   same class as Feature 7.3 (issue #30).
+
+#### Feature 7.7 — Type-aware edge resolution (reduce name-match imprecision)
+- Surfaced in: Feature 4.0 (edge population) — tracks issue #36
+- Description: `build_edges` resolves references by name only, which never
+  invents a false edge but misses real ones under name collisions:
+  - method calls resolve by method name, ignoring the receiver's type;
+  - no scope/shadowing model;
+  - colliding same-named definitions are skipped, not disambiguated.
+- Process: prefer same-file/same-scope matches; use import bindings to
+  disambiguate (`from bar import b` → `b()` resolves to `bar.b`); longer term,
+  light type inference for `self.method()` / `obj.method()`.
+- Outputs: more complete and precise call/import edges
+- Testing:
+  - same-named functions across files: an importing file's call resolves to the
+    imported one, not skipped
+  - `self.method()` resolves to the enclosing class's method under name collision
+- Note: improves accuracy of Feature 4.1 (call chains) and 4.2 (blast radius).
