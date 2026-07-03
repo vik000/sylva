@@ -514,3 +514,22 @@ these group deferred notes so they are tracked, not lost. (GitHub milestone #7.)
 - Testing:
   - General: CI passes across the matrix
   - Error control: build time reduced by caching
+
+#### Feature 7.6 — apply_coverage correlation robustness (dedup + stale reset)
+- Surfaced in: Feature 3.2 (correlate coverage to symbols) — tracks issue #34
+- Description: two low-severity robustness gaps in `apply_coverage`:
+  - (A) if two report entries suffix-match the same graph file, `reconcile`
+    does a nondeterministic last-wins overwrite (HashMap iteration order);
+  - (B) coverage is never reset, so a file absent from a later report keeps its
+    stale `coverage_pct` from a previous run.
+- Process:
+  - (A) detect the collision and either merge the line maps (OR) or skip as
+    ambiguous, consistent with the existing file→multiple-graph handling;
+  - (B) decide the contract — a reset pass (NULL all `coverage_pct` first) or
+    document that callers must re-index / that apply is additive.
+- Outputs: deterministic, non-stale coverage correlation
+- Testing:
+  - (A) two report paths mapping to one graph file → deterministic result
+  - (B) re-apply a report missing a previously-covered file → stale handled
+- Note: per-symbol error isolation in `apply_coverage` is structural/untested —
+  same class as Feature 7.3 (issue #30).
