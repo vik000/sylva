@@ -160,13 +160,29 @@ Never: silent corruption, undefined behaviour, unlogged failures.
 #### Feature 2.1 — File hash tracking
 - Description: Store SHA-256 of each file at index time; skip unchanged files on reindex
 - Inputs: db path, file path
-- Process: Hash file contents, compare to stored hash, return skip/reindex decision
-- Outputs: `sylva.file_needs_reindex(db_path, file_path) -> bool`
+- Process: The decision and the checkpoint are split (Option A) so the "indexed"
+  state is never committed before the index it gates succeeds —
+  - `file_needs_reindex`: read-only. Hash file contents, compare to stored hash,
+    return the skip/reindex decision. Makes no DB changes.
+  - `mark_indexed`: persist the current hash, marking the file done. Call only
+    AFTER a successful (re)index, so a crash mid-index leaves the file flagged
+    for reindex rather than silently skipped.
+- Outputs:
+  - `sylva.file_needs_reindex(db_path, file_path) -> bool`
+  - `sylva.mark_indexed(db_path, file_path) -> None`
+- Intended loop:
+  ```
+  if file_needs_reindex(db, f):
+      write_symbols(db, f, extract_symbols(f))
+      mark_indexed(db, f)          # checkpoint only on success
+  ```
 - Testing:
   - General: unchanged file returns False, modified file returns True, new file returns True
   - Edge: empty file has stable hash, very large file hashes correctly
-  - Negative: unreadable file raises error
-  - Error control: DB write failure on hash update is logged and retried once
+  - Read-only: file_needs_reindex writes nothing; a crash before mark_indexed
+    leaves the file still flagged for reindex
+  - Negative: unreadable file raises error (both functions)
+  - Error control: mark_indexed write failure is logged and retried once, never fatal
 
 #### Feature 2.2 — File watcher
 - Description: Watch a directory for changes and trigger reindex of modified files
