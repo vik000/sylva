@@ -1,0 +1,19 @@
+# Rust
+/target/
+Cargo.lock
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.so
+
+# maturin build artifacts
+*.egg-info/
+build/
+dist/
+
+# OS
+.DS_Store
