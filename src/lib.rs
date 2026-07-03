@@ -1,5 +1,6 @@
 use pyo3::prelude::*;
 
+mod coverage;
 mod db;
 mod extractor;
 mod hash;
@@ -21,5 +22,6 @@ fn sylva(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(watcher::handle_delete, m)?)?;
     m.add_function(wrap_pyfunction!(watcher::start_watcher, m)?)?;
     m.add_class::<watcher::WatcherHandle>()?;
+    m.add_function(wrap_pyfunction!(coverage::parse_coverage, m)?)?;
     Ok(())
 }
