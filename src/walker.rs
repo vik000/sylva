@@ -1,15 +1,19 @@
 //! Python file walker.
 //!
-//! Recurses a directory tree and returns every `.py` file, skipping paths that
-//! are ignored. This is the *basic* walker for Epic 1 — full `.gitignore` /
-//! `.codemcpignore` hierarchy handling arrives in Feature 2.3, which replaces
-//! this function.
+//! Recurses a directory tree and returns every `.py` file, honouring the
+//! `.gitignore` hierarchy and `.codemcpignore` files (Feature 2.3, which
+//! replaces the basic Epic 1 walker). Ignore handling:
+//! - `.gitignore` files are respected at every level of the tree, and — unlike
+//!   raw git — even when there is no enclosing `.git` repository
+//!   (`require_git(false)`), so indexing a plain source tree still obeys them.
+//! - `.codemcpignore` files are respected too, as Sylva's own ignore file.
+//! - The caller may pass `extra_ignores` for ad-hoc patterns.
 //!
 //! Robustness (per project rules): every path is either yielded as a valid
 //! result, skipped because it is not a `.py` file, or — if it cannot be read
-//! (e.g. permission denied on a subdirectory) — logged and skipped. A missing
-//! root is explicitly rejected with `FileNotFoundError`. The walk never aborts
-//! partway through because of one bad entry.
+//! (permission denied) or a `.gitignore` line is malformed — logged and
+//! skipped. A missing root is explicitly rejected with `FileNotFoundError`.
+//! The walk never aborts partway through because of one bad entry.
 
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use ignore::WalkBuilder;
@@ -62,7 +66,17 @@ pub fn walk_python_files(root: &str, extra_ignores: Option<Vec<String>>) -> PyRe
     let extra = build_extra_matcher(root_path, &extra_ignores)?;
 
     let mut builder = WalkBuilder::new(root_path);
-    builder.add_custom_ignore_filename(".codemcpignore");
+    builder
+        // Honour .gitignore even when the tree is not a git repo. This is the
+        // heart of Feature 2.3 — without it the ignore crate treats .gitignore
+        // as inert outside a checkout.
+        .require_git(false)
+        // Keep results reproducible and confined to the walked tree: don't pull
+        // in the developer's global gitignore or ignore files above `root`.
+        .git_global(false)
+        .parents(false)
+        // Sylva's own ignore file, respected per-directory like .gitignore.
+        .add_custom_ignore_filename(".codemcpignore");
 
     let mut results: Vec<String> = Vec::new();
     for entry in builder.build() {
