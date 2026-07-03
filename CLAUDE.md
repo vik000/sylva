@@ -550,3 +550,20 @@ these group deferred notes so they are tracked, not lost. (GitHub milestone #7.)
     imported one, not skipped
   - `self.method()` resolves to the enclosing class's method under name collision
 - Note: improves accuracy of Feature 4.1 (call chains) and 4.2 (blast radius).
+
+#### Feature 7.8 — Import edges are name-conflated / lost for aliased imports
+- Surfaced in: Feature 4.2 (blast radius) — tracks issue #37
+- Description: Feature 4.0 builds `imports` edges as `binding -> definition`
+  resolved by the binding's name. Aliased imports (`import x as y`) lose the
+  original name so no edge forms; non-aliased imports share the target's name so
+  the binding is conflated with the target. Net: import edges don't enrich
+  `blast_radius` / `get_dependencies` today.
+- Process: retain the original imported name + source module in the extractor;
+  resolve import edges by original name + module (reuse 3.2 suffix matching) so
+  an importing context links to the real definition, distinct from it.
+- Outputs: import relationships surface in blast radius and get_dependencies
+- Testing:
+  - `from lib import util as u` yields an imports edge to `util` (survives alias)
+  - an importing file appears as a distinct dependent in `blast_radius('util')`
+    with `via: 'imports'`, without seeding the edge by hand
+- Note: distinct from Feature 7.7 (#36), which is about call resolution.
