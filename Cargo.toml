@@ -1,6 +1,6 @@
 [package]
 name = "sylva"
-version = "1.8.0"
+version = "1.9.0"
 edition = "2021"
 description = "Codebase knowledge graph — AST parsing, SQLite graph, MCP server"
 license = "MIT"

@@ -14,6 +14,9 @@
 //! - `search_symbol` (params: name)  — symbols matching a name
 //! - `get_callers`   (params: symbol) — symbols that call the given symbol
 //! - `get_dependencies` (params: symbol) — symbols the given symbol calls/imports
+//! - `get_coverage` (params: name) — a symbol's coverage %, or null (Feature 3.5)
+//! - `get_uncovered_paths` (no params) — symbols with 0% coverage (Feature 3.5)
+//! - `get_test_coverage` (params: name) — tests that exercise a symbol (Feature 3.5)
 //!
 //! `get_callers` / `get_dependencies` read the `edges` table, which is not yet
 //! populated by the indexer (see issue #27). Their query logic is exercised
@@ -21,7 +24,7 @@
 //! return an empty list until edge population lands.
 
 use pyo3::prelude::*;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use std::path::Path;
 
@@ -79,15 +82,18 @@ fn sql_for(method: &str) -> Option<&'static str> {
     }
 }
 
-/// Run a tool query and return its results as a JSON array. Errors are returned
-/// as human-readable strings for the caller to wrap in a JSON-RPC error.
-fn run_query(db_path: &str, sql: &str, name: &str) -> Result<Value, String> {
+/// Open the graph database for a query, mapping a missing file or open failure
+/// to a human-readable error (wrapped as a JSON-RPC error by the caller).
+fn open_db(db_path: &str) -> Result<Connection, String> {
     if !Path::new(db_path).exists() {
         return Err(format!("database not found: '{}'", db_path));
     }
+    Connection::open(db_path).map_err(|e| format!("cannot open database '{}': {}", db_path, e))
+}
 
-    let conn = Connection::open(db_path)
-        .map_err(|e| format!("cannot open database '{}': {}", db_path, e))?;
+/// Run a symbol-shaped tool query and return its results as a JSON array.
+fn run_query(db_path: &str, sql: &str, name: &str) -> Result<Value, String> {
+    let conn = open_db(db_path)?;
 
     let mut stmt = conn
         .prepare(sql)
@@ -112,6 +118,78 @@ fn run_query(db_path: &str, sql: &str, name: &str) -> Result<Value, String> {
     Ok(Value::Array(out))
 }
 
+/// `get_coverage` — a symbol's coverage percentage, or JSON `null` when the
+/// symbol is unknown or has no coverage data (both map to null, never an error).
+fn coverage_query(db_path: &str, name: &str) -> Result<Value, String> {
+    let conn = open_db(db_path)?;
+    let pct: Option<Option<f64>> = conn
+        .query_row(
+            "SELECT coverage_pct FROM symbols WHERE name = ?1 LIMIT 1",
+            params![name],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("query failed: {}", e))?;
+    Ok(match pct {
+        Some(Some(value)) => json!(value),
+        _ => Value::Null,
+    })
+}
+
+/// `get_uncovered_paths` — symbols known to be untested (`coverage_pct == 0.0`),
+/// as `{name, file, line}` objects. Symbols with no data (NULL) are excluded:
+/// "uncovered" means known-untested, not unmeasured. Empty list when none.
+fn uncovered_paths_query(db_path: &str) -> Result<Value, String> {
+    let conn = open_db(db_path)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT s.name, f.path, s.line_start \
+             FROM symbols s JOIN files f ON f.id = s.file_id \
+             WHERE s.coverage_pct = 0.0 \
+             ORDER BY f.path, s.line_start",
+        )
+        .map_err(|e| format!("failed to prepare query: {}", e))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(json!({
+                "name": row.get::<_, String>(0)?,
+                "file": row.get::<_, String>(1)?,
+                "line": row.get::<_, Option<i64>>(2)?,
+            }))
+        })
+        .map_err(|e| format!("query failed: {}", e))?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|e| format!("failed to read row: {}", e))?);
+    }
+    Ok(Value::Array(out))
+}
+
+/// `get_test_coverage` — the names of test functions that exercise the given
+/// symbol (inbound `test_covers` edges). Empty list for an unknown/untested
+/// symbol.
+fn test_coverage_query(db_path: &str, name: &str) -> Result<Value, String> {
+    let conn = open_db(db_path)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT DISTINCT src.name \
+             FROM edges e \
+             JOIN symbols dst ON dst.id = e.dst_id \
+             JOIN symbols src ON src.id = e.src_id \
+             WHERE dst.name = ?1 AND e.kind = 'test_covers' \
+             ORDER BY src.name",
+        )
+        .map_err(|e| format!("failed to prepare query: {}", e))?;
+    let rows = stmt
+        .query_map(params![name], |row| Ok(json!(row.get::<_, String>(0)?)))
+        .map_err(|e| format!("query failed: {}", e))?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|e| format!("failed to read row: {}", e))?);
+    }
+    Ok(Value::Array(out))
+}
+
 /// Handle a single JSON-RPC request against the graph database and return the
 /// JSON-RPC response as a string. Never raises — all failures become JSON-RPC
 /// error responses.
@@ -129,33 +207,55 @@ pub fn handle_request(db_path: &str, request: &str) -> String {
         None => return err_response(id, INVALID_REQUEST, "Invalid Request: missing 'method'"),
     };
 
-    let sql = match sql_for(method) {
-        Some(sql) => sql,
-        None => {
+    // Most tools take a single string argument, under either `name` or `symbol`.
+    let params_val = req.get("params").cloned().unwrap_or(Value::Null);
+    let name_arg = params_val
+        .get("name")
+        .or_else(|| params_val.get("symbol"))
+        .and_then(Value::as_str);
+
+    // A tool requiring a name arg: run `f(name)`, or fail with invalid params.
+    macro_rules! with_name {
+        ($f:expr) => {
+            match name_arg {
+                Some(name) => $f(db_path, name),
+                None => {
+                    return err_response(
+                        id,
+                        INVALID_PARAMS,
+                        "Invalid params: expected a 'name' or 'symbol' string",
+                    )
+                }
+            }
+        };
+    }
+
+    let outcome: Result<Value, String> = match method {
+        // Feature 1.6 — symbol/graph tools (all share the symbol-list shape).
+        "search_symbol" | "get_callers" | "get_dependencies" => {
+            let sql = sql_for(method).expect("method matched above");
+            match name_arg {
+                Some(name) => run_query(db_path, sql, name),
+                None => {
+                    return err_response(
+                        id,
+                        INVALID_PARAMS,
+                        "Invalid params: expected a 'name' or 'symbol' string",
+                    )
+                }
+            }
+        }
+        // Feature 3.5 — coverage tools.
+        "get_coverage" => with_name!(coverage_query),
+        "get_test_coverage" => with_name!(test_coverage_query),
+        "get_uncovered_paths" => uncovered_paths_query(db_path),
+        _ => {
             return err_response(id, METHOD_NOT_FOUND, &format!("Method not found: {}", method))
         }
     };
 
-    // All three tools take a single string argument; accept either `name` or
-    // `symbol` so callers can use whichever reads naturally.
-    let params_val = req.get("params").cloned().unwrap_or(Value::Null);
-    let arg = params_val
-        .get("name")
-        .or_else(|| params_val.get("symbol"))
-        .and_then(Value::as_str);
-    let name = match arg {
-        Some(s) => s,
-        None => {
-            return err_response(
-                id,
-                INVALID_PARAMS,
-                "Invalid params: expected a 'name' or 'symbol' string",
-            )
-        }
-    };
-
-    match run_query(db_path, sql, name) {
-        Ok(results) => ok_response(id, results),
+    match outcome {
+        Ok(result) => ok_response(id, result),
         Err(msg) => err_response(id, SERVER_ERROR, &msg),
     }
 }
