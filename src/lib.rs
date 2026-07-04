@@ -1,5 +1,6 @@
 use pyo3::prelude::*;
 
+mod architecture;
 mod coverage;
 mod db;
 mod edges;
@@ -31,5 +32,6 @@ fn sylva(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(edges::build_edges, m)?)?;
     m.add_function(wrap_pyfunction!(edges::trace_calls, m)?)?;
     m.add_function(wrap_pyfunction!(edges::blast_radius, m)?)?;
+    m.add_function(wrap_pyfunction!(architecture::get_architecture, m)?)?;
     Ok(())
 }
