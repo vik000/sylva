@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "sylva"
-version = "1.13.0"
+version = "1.14.0"
 requires-python = ">=3.9"
 description = "Codebase knowledge graph — AST parsing, SQLite graph, MCP server"
 
@@ -14,3 +14,5 @@ sylva = "sylva.__main__:main"
 [tool.maturin]
 python-source = "python"
 features = ["pyo3/extension-module"]
+# Package the visualisation UI's static assets (non-.py) into the wheel.
+include = ["python/sylva/viz/assets/**/*"]

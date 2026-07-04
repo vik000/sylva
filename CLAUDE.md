@@ -333,15 +333,30 @@ Never: silent corruption, undefined behaviour, unlogged failures.
   - Error control: missing DB raises clear error
 
 #### Feature 4.4 — Interactive visualisation UI
-- Description: Local web UI served by the binary — force-directed module graph
+- Description: Local web UI — force-directed graph of the codebase. **This is
+  Sylva's first Python-native feature** (module `python/sylva/viz/`, no Rust /
+  PyO3): the export reads `sylva.db` via stdlib `sqlite3` and the server is the
+  stdlib `http.server`. The front-end is a single self-contained `index.html`
+  using **vanilla Canvas + a from-scratch force simulation** (settle-then-freeze
+  for scale) — not D3, and not served by the Rust binary (decisions from design
+  review; supersedes the original "served by the binary / D3" wording).
 - Inputs: db path, port (default 7700)
-- Process: Export graph to JSON, serve single HTML file with D3 force layout; nodes = modules/symbols, edges = call/import relationships; clickable nodes, filterable by depth or module
-- Outputs: `sylva serve-ui --db .codemcp/sylva.db` opens browser at localhost:7700
+- Process:
+  - `sylva.viz.export_graph_json(db, out_dir="visualisation")` writes
+    `visualisation/graph.json` (nodes = symbols with kind/file/coverage/degree,
+    links = call/import edges) — the artifact, refreshable manually now, with a
+    watcher hook as a follow-on. `build_graph(db)` is the shared, testable core.
+  - `sylva.viz.serve(db, port, open_browser)` serves `/` (the HTML) and a live
+    `/graph.json`, and opens the browser.
+- Outputs: `sylva serve-ui --db .codemcp/sylva.db [--port N] [--no-open]` writes
+  the graph, starts the local server, and opens the browser at localhost:7700
 - Testing:
   - General: server starts, /graph.json returns valid JSON, HTML page loads
   - Edge: empty graph renders without error, large graph (1000+ nodes) loads within 3s
   - Negative: port in use raises clear error with suggestion to use --port
   - Error control: DB not found returns 500 with JSON error body
+- Note: `graph.json` is kept viz-shaped and separate from Feature 6.3's general
+  JSON/GraphML export for external tools.
 
 #### Feature 4.5 — Coverage overlay in visualisation
 - Description: Extend the module graph UI with a coverage mode

@@ -15,5 +15,9 @@ __pycache__/
 build/
 dist/
 
+# Sylva generated artifacts
+visualisation/
+.codemcp/
+
 # OS
 .DS_Store

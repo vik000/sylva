@@ -32,9 +32,18 @@ config and communicates over stdin/stdout.
 
 ## Visualisation
 
-Single self-contained HTML file served by the binary's built-in HTTP server.
-D3 force-directed layout. No build step, no npm, no framework — just one
-file the binary embeds at compile time via `include_str!`.
+Single self-contained HTML file, no build step, no npm, no framework.
+
+**Revised in Feature 4.4** (from the original "served by the binary, D3,
+`include_str!`" plan): the visualisation is **Python-native** (`sylva/viz/`).
+The export reads `sylva.db` via stdlib `sqlite3`; the server is the stdlib
+`http.server`; the front-end uses **vanilla Canvas + a from-scratch force
+simulation** rather than D3. Rationale: the project has no Rust binary target
+(it's a cdylib + Python console script), Python's stdlib covers the server for
+free, and modern JS/Canvas make D3 unnecessary — d3-force's only real value (the
+n-body sim) is small enough to hand-write with a settle-then-freeze strategy for
+the 1000-node target (Barnes–Hut left as a future optimisation if live large
+graphs are needed).
 
 ## Coverage integration
 

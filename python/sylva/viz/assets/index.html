@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Sylva — Codebase Graph</title>
+<style>
+  :root {
+    --bg: #0f1117; --panel: #171a23; --ink: #e6e9ef; --muted: #8b93a7;
+    --line: #2a2f3c; --accent: #6ea8fe;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink);
+    font: 13px/1.4 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  #app { position: fixed; inset: 0; display: grid; grid-template-columns: 1fr 260px; }
+  canvas { display: block; width: 100%; height: 100%; cursor: grab; }
+  canvas.dragging { cursor: grabbing; }
+  #side { background: var(--panel); border-left: 1px solid var(--line);
+    padding: 14px; overflow-y: auto; }
+  h1 { font-size: 14px; margin: 0 0 4px; letter-spacing: .3px; }
+  .sub { color: var(--muted); font-size: 11px; margin-bottom: 14px; }
+  .field { margin-bottom: 12px; }
+  label { display: block; color: var(--muted); font-size: 11px; margin-bottom: 4px; }
+  input[type=text] { width: 100%; padding: 6px 8px; background: #0d0f16; color: var(--ink);
+    border: 1px solid var(--line); border-radius: 6px; outline: none; }
+  input[type=text]:focus { border-color: var(--accent); }
+  .legend div { display: flex; align-items: center; gap: 8px; margin: 4px 0; color: var(--muted); }
+  .dot { width: 10px; height: 10px; border-radius: 50%; }
+  .toggle { display: flex; align-items: center; gap: 6px; margin: 4px 0; color: var(--muted); }
+  #info { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 10px; }
+  #info .name { color: var(--ink); font-weight: 600; word-break: break-all; }
+  #info .row { color: var(--muted); margin: 3px 0; }
+  #empty { position: absolute; inset: 0; display: none; place-items: center;
+    color: var(--muted); pointer-events: none; }
+  #empty.show { display: grid; }
+  .hint { color: var(--muted); font-size: 11px; margin-top: 14px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div style="position:relative">
+    <canvas id="c"></canvas>
+    <div id="empty">No graph data. Index a codebase and refresh.</div>
+  </div>
+  <div id="side">
+    <h1>Sylva</h1>
+    <div class="sub" id="stats">loading…</div>
+    <div class="field">
+      <label>Filter by name / file</label>
+      <input id="filter" type="text" placeholder="e.g. util or src/foo.py" />
+    </div>
+    <div class="field">
+      <label>Show</label>
+      <div class="toggle"><input type="checkbox" id="k-function" checked><span class="dot" style="background:#6ea8fe"></span>functions</div>
+      <div class="toggle"><input type="checkbox" id="k-class" checked><span class="dot" style="background:#f2a65a"></span>classes</div>
+      <div class="toggle"><input type="checkbox" id="k-import" checked><span class="dot" style="background:#7ee787"></span>imports</div>
+    </div>
+    <div id="info"><div class="row">Click a node for details.</div></div>
+    <div class="hint">Scroll to zoom · drag background to pan · drag a node to move it · click to highlight neighbours.</div>
+  </div>
+</div>
+<script>
+"use strict";
+const KIND_COLOR = { function: "#6ea8fe", class: "#f2a65a", import: "#7ee787", error: "#f85149" };
+const canvas = document.getElementById("c");
+const ctx = canvas.getContext("2d");
+let W = 0, H = 0, DPR = Math.max(1, window.devicePixelRatio || 1);
+
+let NODES = [], LINKS = [], BY_ID = new Map(), ADJ = new Map();
+let view = { x: 0, y: 0, k: 1 };          // pan/zoom
+let selected = null, hoverId = null;
+const kinds = { function: true, class: true, import: true };
+let filterText = "";
+
+function resize() {
+  W = canvas.clientWidth; H = canvas.clientHeight;
+  canvas.width = W * DPR; canvas.height = H * DPR;
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  draw();
+}
+window.addEventListener("resize", resize);
+
+async function load() {
+  const res = await fetch("graph.json");
+  const g = await res.json();
+  NODES = g.nodes.map(n => ({ ...n, x: (Math.random() - .5) * 600, y: (Math.random() - .5) * 600, vx: 0, vy: 0 }));
+  LINKS = g.links;
+  BY_ID = new Map(NODES.map(n => [n.id, n]));
+  ADJ = new Map(NODES.map(n => [n.id, new Set()]));
+  for (const l of LINKS) {
+    if (ADJ.has(l.source) && ADJ.has(l.target)) {
+      ADJ.get(l.source).add(l.target);
+      ADJ.get(l.target).add(l.source);
+    }
+  }
+  document.getElementById("stats").textContent = `${NODES.length} symbols · ${LINKS.length} edges`;
+  document.getElementById("empty").classList.toggle("show", NODES.length === 0);
+  if (NODES.length) { settle(); center(); }
+  draw();
+}
+
+// --- from-scratch force simulation: settle then freeze -------------------- //
+function settle(ticks = 150) {
+  const n = NODES.length;
+  const REP = 1400, SPRING = 0.02, LINK_LEN = 60, CENTER = 0.008, DAMP = 0.85;
+  for (let t = 0; t < ticks; t++) {
+    // O(n^2) repulsion — fine for the settle pass; capped iterations bound cost.
+    for (let i = 0; i < n; i++) {
+      const a = NODES[i];
+      for (let j = i + 1; j < n; j++) {
+        const b = NODES[j];
+        let dx = a.x - b.x, dy = a.y - b.y;
+        let d2 = dx * dx + dy * dy || 0.01;
+        const f = REP / d2;
+        const d = Math.sqrt(d2);
+        const fx = (dx / d) * f, fy = (dy / d) * f;
+        a.vx += fx; a.vy += fy; b.vx -= fx; b.vy -= fy;
+      }
+    }
+    for (const l of LINKS) {
+      const a = BY_ID.get(l.source), b = BY_ID.get(l.target);
+      if (!a || !b) continue;
+      let dx = b.x - a.x, dy = b.y - a.y;
+      const d = Math.sqrt(dx * dx + dy * dy) || 0.01;
+      const f = (d - LINK_LEN) * SPRING;
+      const fx = (dx / d) * f, fy = (dy / d) * f;
+      a.vx += fx; a.vy += fy; b.vx -= fx; b.vy -= fy;
+    }
+    for (const a of NODES) {
+      a.vx -= a.x * CENTER; a.vy -= a.y * CENTER;
+      a.vx *= DAMP; a.vy *= DAMP;
+      a.x += a.vx; a.y += a.vy;
+    }
+  }
+}
+
+function center() {
+  if (!NODES.length) return;
+  let minx = Infinity, miny = Infinity, maxx = -Infinity, maxy = -Infinity;
+  for (const n of NODES) { minx = Math.min(minx, n.x); miny = Math.min(miny, n.y);
+    maxx = Math.max(maxx, n.x); maxy = Math.max(maxy, n.y); }
+  const gw = maxx - minx || 1, gh = maxy - miny || 1;
+  view.k = Math.min(W / (gw + 120), H / (gh + 120), 2);
+  view.x = W / 2 - ((minx + maxx) / 2) * view.k;
+  view.y = H / 2 - ((miny + maxy) / 2) * view.k;
+}
+
+function radius(n) { return 3 + Math.sqrt(n.degree || 0) * 1.8; }
+function visible(n) {
+  if (!kinds[n.kind]) return false;
+  if (filterText) {
+    const hay = (n.name + " " + (n.file || "")).toLowerCase();
+    if (!hay.includes(filterText)) return false;
+  }
+  return true;
+}
+
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+  ctx.save();
+  ctx.translate(view.x, view.y); ctx.scale(view.k, view.k);
+  const neigh = selected ? ADJ.get(selected.id) : null;
+
+  ctx.lineWidth = 1 / view.k;
+  for (const l of LINKS) {
+    const a = BY_ID.get(l.source), b = BY_ID.get(l.target);
+    if (!a || !b || !visible(a) || !visible(b)) continue;
+    const hot = selected && (l.source === selected.id || l.target === selected.id);
+    ctx.strokeStyle = hot ? "rgba(110,168,254,.9)" : "rgba(120,130,150,.18)";
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+  }
+  for (const n of NODES) {
+    if (!visible(n)) continue;
+    const dim = selected && n.id !== selected.id && !(neigh && neigh.has(n.id));
+    ctx.globalAlpha = dim ? 0.25 : 1;
+    ctx.fillStyle = KIND_COLOR[n.kind] || "#9aa4b8";
+    ctx.beginPath(); ctx.arc(n.x, n.y, radius(n), 0, Math.PI * 2); ctx.fill();
+    if (n.id === (selected && selected.id) || n.id === hoverId) {
+      ctx.strokeStyle = "#fff"; ctx.lineWidth = 2 / view.k; ctx.stroke();
+    }
+    if (view.k > 1.1 || n.id === hoverId || (selected && n.id === selected.id)) {
+      ctx.globalAlpha = dim ? 0.35 : 1;
+      ctx.fillStyle = "#c9d1e0"; ctx.font = `${11 / view.k}px sans-serif`;
+      ctx.fillText(n.name, n.x + radius(n) + 2, n.y + 3);
+    }
+    ctx.globalAlpha = 1;
+  }
+  ctx.restore();
+}
+
+// --- interaction ---------------------------------------------------------- //
+function toWorld(px, py) { return { x: (px - view.x) / view.k, y: (py - view.y) / view.k }; }
+function pick(px, py) {
+  const w = toWorld(px, py);
+  let best = null, bestd = Infinity;
+  for (const n of NODES) {
+    if (!visible(n)) continue;
+    const dx = n.x - w.x, dy = n.y - w.y, d = Math.hypot(dx, dy);
+    if (d < radius(n) + 4 && d < bestd) { best = n; bestd = d; }
+  }
+  return best;
+}
+
+let dragNode = null, panning = false, last = null;
+canvas.addEventListener("mousedown", e => {
+  last = { x: e.offsetX, y: e.offsetY };
+  const hit = pick(e.offsetX, e.offsetY);
+  if (hit) { dragNode = hit; select(hit); } else { panning = true; canvas.classList.add("dragging"); }
+});
+window.addEventListener("mousemove", e => {
+  const rect = canvas.getBoundingClientRect();
+  const px = e.clientX - rect.left, py = e.clientY - rect.top;
+  if (dragNode) { const w = toWorld(px, py); dragNode.x = w.x; dragNode.y = w.y; draw(); }
+  else if (panning && last) { view.x += px - last.x; view.y += py - last.y; last = { x: px, y: py }; draw(); }
+  else { const h = pick(px, py); const id = h ? h.id : null; if (id !== hoverId) { hoverId = id; draw(); } }
+});
+window.addEventListener("mouseup", () => { dragNode = null; panning = false; last = null; canvas.classList.remove("dragging"); });
+canvas.addEventListener("wheel", e => {
+  e.preventDefault();
+  const scale = Math.exp(-e.deltaY * 0.0015);
+  const mx = e.offsetX, my = e.offsetY;
+  view.x = mx - (mx - view.x) * scale; view.y = my - (my - view.y) * scale;
+  view.k *= scale; draw();
+}, { passive: false });
+
+function select(n) {
+  selected = n;
+  const info = document.getElementById("info");
+  const cov = (n.coverage === null || n.coverage === undefined) ? "n/a" : n.coverage.toFixed(1) + "%";
+  info.innerHTML = `<div class="name">${n.name}</div>` +
+    `<div class="row">kind: ${n.kind}</div>` +
+    `<div class="row">file: ${n.file || ""}:${n.line ?? "?"}</div>` +
+    `<div class="row">degree: ${n.degree}</div>` +
+    `<div class="row">coverage: ${cov}</div>`;
+  draw();
+}
+
+document.getElementById("filter").addEventListener("input", e => { filterText = e.target.value.trim().toLowerCase(); draw(); });
+for (const k of ["function", "class", "import"]) {
+  document.getElementById("k-" + k).addEventListener("change", e => { kinds[k] = e.target.checked; draw(); });
+}
+
+resize();
+load();
+</script>
+</body>
+</html>

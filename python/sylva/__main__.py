@@ -39,10 +39,24 @@ def main(argv=None):
     serve = sub.add_parser("serve", help="Start the MCP server over stdio")
     serve.add_argument("--db", required=True, help="Path to the sylva.db graph database")
 
+    ui = sub.add_parser("serve-ui", help="Serve the interactive visualisation UI")
+    ui.add_argument("--db", required=True, help="Path to the sylva.db graph database")
+    ui.add_argument("--port", type=int, default=7700, help="Port to serve on (default 7700)")
+    ui.add_argument("--no-open", action="store_true", help="Do not open the browser")
+
     args = parser.parse_args(argv)
 
     if args.command == "serve":
         return _serve(args.db)
+
+    if args.command == "serve-ui":
+        from .viz.server import serve as serve_ui
+
+        try:
+            return serve_ui(args.db, port=args.port, open_browser=not args.no_open)
+        except OSError as e:
+            print(f"sylva: {e}", file=sys.stderr)
+            return 1
 
     parser.error(f"unknown command: {args.command}")  # unreachable via argparse
 
