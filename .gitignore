@@ -19,8 +19,11 @@ dist/
 visualisation/
 .codemcp/
 
-# Local feature-workflow session state (not versioned)
-.claude/active_feature
+# Claude Code / local dev tooling (not part of the published project)
+/CLAUDE.md
+/.claude/
+/setup_github.sh
+/create_issues_only.sh
 
 # OS
 .DS_Store
