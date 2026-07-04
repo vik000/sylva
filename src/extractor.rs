@@ -23,6 +23,10 @@ struct Symbol {
     line: usize,
     line_end: usize,
     docstring: Option<String>,
+    // For `import` symbols only: the original imported name and source module,
+    // so aliased imports resolve to the real definition (Feature 7.8 / #37).
+    import_module: Option<String>,
+    import_name: Option<String>,
 }
 
 fn node_text(node: Node, src: &[u8]) -> String {
@@ -77,27 +81,49 @@ fn collect_imports(node: Node, src: &[u8], out: &mut Vec<Symbol>) {
     // An import statement usually occupies one line, but a parenthesised
     // `from x import (a, b)` can span several; use the statement's own extent.
     let line_end = node.end_position().row + 1;
+    // Source module for `from <module> import ...` (None for plain `import x`).
+    let module = node.child_by_field_name("module_name").map(|m| node_text(m, src));
 
     let mut cursor = node.walk();
     for child in node.children_by_field_name("name", &mut cursor) {
-        let name = match child.kind() {
-            // `import numpy as np` / `from x import y as z` — prefer the bound
-            // alias, since that is the name visible in the module.
-            "aliased_import" => child
-                .child_by_field_name("alias")
-                .or_else(|| child.child_by_field_name("name"))
-                .map(|n| node_text(n, src)),
-            _ => Some(node_text(child, src)),
+        // `bound` is the name visible in the module (the alias, if any);
+        // `original` is the name as it exists at the source, used for resolution.
+        let (bound, original) = match child.kind() {
+            "aliased_import" => {
+                let orig = child.child_by_field_name("name").map(|n| node_text(n, src));
+                let alias = child.child_by_field_name("alias").map(|n| node_text(n, src));
+                (alias.or_else(|| orig.clone()), orig)
+            }
+            _ => {
+                let n = node_text(child, src);
+                (Some(n.clone()), Some(n))
+            }
         };
-        if let Some(name) = name {
-            out.push(Symbol { name, kind: "import", line, line_end, docstring: None });
+        if let Some(bound) = bound {
+            out.push(Symbol {
+                name: bound,
+                kind: "import",
+                line,
+                line_end,
+                docstring: None,
+                import_module: module.clone(),
+                import_name: original,
+            });
         }
     }
 
     let mut wc = node.walk();
     for child in node.children(&mut wc) {
         if child.kind() == "wildcard_import" {
-            out.push(Symbol { name: "*".to_string(), kind: "import", line, line_end, docstring: None });
+            out.push(Symbol {
+                name: "*".to_string(),
+                kind: "import",
+                line,
+                line_end,
+                docstring: None,
+                import_module: module.clone(),
+                import_name: Some("*".to_string()),
+            });
         }
     }
 }
@@ -122,6 +148,8 @@ fn collect(node: Node, src: &[u8], out: &mut Vec<Symbol>, err_line: &mut Option<
                         line: child.start_position().row + 1,
                         line_end: child.end_position().row + 1,
                         docstring: get_docstring(child, src),
+                        import_module: None,
+                        import_name: None,
                     });
                 }
             }
@@ -133,6 +161,8 @@ fn collect(node: Node, src: &[u8], out: &mut Vec<Symbol>, err_line: &mut Option<
                         line: child.start_position().row + 1,
                         line_end: child.end_position().row + 1,
                         docstring: get_docstring(child, src),
+                        import_module: None,
+                        import_name: None,
                     });
                 }
             }
@@ -190,6 +220,8 @@ pub fn extract_symbols(py: Python<'_>, path: &str) -> PyResult<Py<PyList>> {
         d.set_item("line", s.line)?;
         d.set_item("line_end", s.line_end)?;
         d.set_item("docstring", s.docstring)?;
+        d.set_item("import_module", s.import_module)?;
+        d.set_item("import_name", s.import_name)?;
         list.append(d)?;
     }
 

@@ -30,6 +30,8 @@ struct Row {
     line_start: Option<i64>,
     line_end: Option<i64>,
     docstring: Option<String>,
+    import_module: Option<String>,
+    import_name: Option<String>,
 }
 
 /// Pull a required string value out of a symbol dict.
@@ -95,6 +97,8 @@ pub fn write_symbols(
             line_start: optional_int(dict, "line")?,
             line_end: optional_int(dict, "line_end")?,
             docstring: optional_str(dict, "docstring")?,
+            import_module: optional_str(dict, "import_module")?,
+            import_name: optional_str(dict, "import_name")?,
         });
     }
 
@@ -129,8 +133,9 @@ pub fn write_symbols(
     {
         let mut stmt = tx
             .prepare(
-                "INSERT INTO symbols (file_id, name, kind, line_start, line_end, docstring) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                "INSERT INTO symbols \
+                 (file_id, name, kind, line_start, line_end, docstring, import_module, import_name) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             )
             .map_err(|e| PyRuntimeError::new_err(format!("failed to prepare insert: {}", e)))?;
 
@@ -141,7 +146,9 @@ pub fn write_symbols(
                 row.kind,
                 row.line_start,
                 row.line_end,
-                row.docstring
+                row.docstring,
+                row.import_module,
+                row.import_name
             ])
             .map_err(|e| {
                 PyRuntimeError::new_err(format!("failed to write symbol '{}': {}", row.name, e))

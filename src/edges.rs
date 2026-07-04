@@ -39,6 +39,8 @@ struct SymRow {
     file_id: i64,
     line_start: Option<i64>,
     line_end: Option<i64>,
+    import_module: Option<String>,
+    import_name: Option<String>,
 }
 
 fn node_text(node: Node, src: &[u8]) -> String {
@@ -71,6 +73,49 @@ fn resolve_def(
                     many.iter().filter(|(_, f)| *f == file).map(|(id, _)| *id).collect();
                 if same_file.len() == 1 {
                     return Resolution::Resolved(same_file[0]);
+                }
+            }
+            Resolution::Ambiguous
+        }
+        _ => Resolution::Unresolved,
+    }
+}
+
+/// Does `file_path` correspond to the dotted `module`? e.g. `flask.app` matches
+/// `.../flask/app.py`, and `flask` matches `.../flask/__init__.py`. Used to pick
+/// the right definition among same-named candidates for an import.
+fn file_matches_module(file_path: &str, module: &str) -> bool {
+    let stripped = file_path.strip_suffix(".py").unwrap_or(file_path);
+    let mut path_comps: Vec<&str> =
+        stripped.split(['/', '\\']).filter(|c| !c.is_empty() && *c != ".").collect();
+    if path_comps.last() == Some(&"__init__") {
+        path_comps.pop();
+    }
+    let mod_comps: Vec<&str> = module.split('.').filter(|c| !c.is_empty()).collect();
+    !mod_comps.is_empty() && path_comps.ends_with(&mod_comps)
+}
+
+/// Resolve an import's original name to a definition, preferring the one in the
+/// named source module when several share the name (Feature 7.8 / #37).
+fn resolve_import(
+    defs_by_name: &HashMap<String, Vec<(i64, i64)>>,
+    files_by_id: &HashMap<i64, String>,
+    name: &str,
+    module: Option<&str>,
+) -> Resolution {
+    match defs_by_name.get(name).map(Vec::as_slice) {
+        Some([(only, _)]) => Resolution::Resolved(*only),
+        Some(many) if many.len() > 1 => {
+            if let Some(module) = module {
+                let matches: Vec<i64> = many
+                    .iter()
+                    .filter(|(_, fid)| {
+                        files_by_id.get(fid).map_or(false, |p| file_matches_module(p, module))
+                    })
+                    .map(|(id, _)| *id)
+                    .collect();
+                if matches.len() == 1 {
+                    return Resolution::Resolved(matches[0]);
                 }
             }
             Resolution::Ambiguous
@@ -129,7 +174,10 @@ pub fn build_edges(db_path: &str) -> PyResult<usize> {
     // Load all symbols and file records once.
     let syms: Vec<SymRow> = {
         let mut stmt = conn
-            .prepare("SELECT id, name, kind, file_id, line_start, line_end FROM symbols")
+            .prepare(
+                "SELECT id, name, kind, file_id, line_start, line_end, import_module, import_name \
+                 FROM symbols",
+            )
             .map_err(|e| PyRuntimeError::new_err(format!("failed to read symbols: {}", e)))?;
         let rows = stmt
             .query_map([], |r| {
@@ -140,6 +188,8 @@ pub fn build_edges(db_path: &str) -> PyResult<usize> {
                     file_id: r.get(3)?,
                     line_start: r.get(4)?,
                     line_end: r.get(5)?,
+                    import_module: r.get(6)?,
+                    import_name: r.get(7)?,
                 })
             })
             .map_err(|e| PyRuntimeError::new_err(format!("failed to read symbols: {}", e)))?;
@@ -157,6 +207,8 @@ pub fn build_edges(db_path: &str) -> PyResult<usize> {
         rows.collect::<Result<_, _>>()
             .map_err(|e| PyRuntimeError::new_err(format!("failed to read files: {}", e)))?
     };
+
+    let files_by_id: HashMap<i64, String> = files.iter().cloned().collect();
 
     // Definitions by name (resolution targets) and non-import symbols by file
     // (caller-span lookup).
@@ -181,20 +233,46 @@ pub fn build_edges(db_path: &str) -> PyResult<usize> {
     let mut skipped_ambiguous = 0usize;
     let mut skipped_unresolved = 0usize;
 
-    // (src_id, dst_id) call edges, resolved.
+    // --- Import edges (resolved first, so calls can use them) ---------------
+    // Each import binding → the definition it names, resolved by the *original*
+    // imported name + source module (survives aliasing). Also records, per file,
+    // which bound names map to which definition, to disambiguate call resolution.
+    let mut import_edges: Vec<(i64, i64)> = Vec::new();
+    let mut import_targets: HashMap<i64, HashMap<String, i64>> = HashMap::new();
+    for s in syms.iter().filter(|s| s.kind == "import") {
+        let original = s.import_name.as_deref().unwrap_or(&s.name);
+        if original == "*" {
+            continue; // wildcard import — nothing specific to resolve
+        }
+        match resolve_import(&defs_by_name, &files_by_id, original, s.import_module.as_deref()) {
+            Resolution::Resolved(dst) if dst != s.id => {
+                import_edges.push((s.id, dst));
+                import_targets.entry(s.file_id).or_default().insert(s.name.clone(), dst);
+            }
+            Resolution::Resolved(_) => {} // self-reference, skip
+            Resolution::Ambiguous => skipped_ambiguous += 1,
+            Resolution::Unresolved => skipped_unresolved += 1,
+        }
+    }
+
+    // --- Call edges --------------------------------------------------------
     let mut call_edges: Vec<(i64, i64)> = Vec::new();
     for (file_id, path) in &files {
         let source = match std::fs::read_to_string(path) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("sylva: skipping unreadable file '{}' during edge build: {}", path, e);
+                if verbose {
+                    eprintln!("sylva: skipping unreadable file '{}' during edge build: {}", path, e);
+                }
                 continue;
             }
         };
         let tree = match parser.parse(source.as_bytes(), None) {
             Some(t) => t,
             None => {
-                eprintln!("sylva: failed to parse '{}' during edge build; skipping", path);
+                if verbose {
+                    eprintln!("sylva: failed to parse '{}' during edge build; skipping", path);
+                }
                 continue;
             }
         };
@@ -204,11 +282,20 @@ pub fn build_edges(db_path: &str) -> PyResult<usize> {
 
         let empty = Vec::new();
         let candidates = by_file.get(file_id).unwrap_or(&empty);
+        let file_imports = import_targets.get(file_id);
         for (line, callee) in calls {
             let caller = match innermost(&syms, candidates, line) {
                 Some(s) => s,
                 None => continue, // call outside any symbol (module-level) — no src
             };
+
+            // 1. Import-aware: if this file imports `callee`, use its target.
+            if let Some(dst) = file_imports.and_then(|m| m.get(&callee)) {
+                call_edges.push((caller.id, *dst));
+                continue;
+            }
+
+            // 2. Same-file preference, then unique global (issue #36).
             match resolve_def(&defs_by_name, &callee, Some(*file_id)) {
                 Resolution::Resolved(dst) => call_edges.push((caller.id, dst)),
                 Resolution::Ambiguous => {
@@ -227,7 +314,7 @@ pub fn build_edges(db_path: &str) -> PyResult<usize> {
         }
     }
 
-    // Now write: clear old calls/imports, then insert imports + calls.
+    // --- Write: clear old calls/imports, then insert imports + calls -------
     let tx = conn
         .transaction()
         .map_err(|e| PyRuntimeError::new_err(format!("failed to begin transaction: {}", e)))?;
@@ -241,22 +328,11 @@ pub fn build_edges(db_path: &str) -> PyResult<usize> {
             .prepare("INSERT OR IGNORE INTO edges (src_id, dst_id, kind) VALUES (?1, ?2, ?3)")
             .map_err(|e| PyRuntimeError::new_err(format!("failed to prepare insert: {}", e)))?;
 
-        // Import edges: each import binding → the definition it names.
-        for s in syms.iter().filter(|s| s.kind == "import") {
-            // Imports point cross-file by nature, so same-file preference does
-            // not apply — resolve globally (None).
-            match resolve_def(&defs_by_name, &s.name, None) {
-                Resolution::Resolved(dst) if dst != s.id => {
-                    written += insert
-                        .execute(params![s.id, dst, "imports"])
-                        .map_err(|e| PyRuntimeError::new_err(format!("failed to write edge: {}", e)))?;
-                }
-                Resolution::Resolved(_) => {} // self-reference, skip
-                Resolution::Ambiguous => skipped_ambiguous += 1,
-                Resolution::Unresolved => skipped_unresolved += 1,
-            }
+        for (src_id, dst_id) in &import_edges {
+            written += insert
+                .execute(params![src_id, dst_id, "imports"])
+                .map_err(|e| PyRuntimeError::new_err(format!("failed to write edge: {}", e)))?;
         }
-
         // Call edges (self-calls allowed → recursion self-edge).
         for (src_id, dst_id) in &call_edges {
             written += insert
@@ -487,7 +563,17 @@ pub fn blast_radius(py: Python<'_>, db_path: &str, symbol: &str) -> PyResult<Py<
         }
     }
 
-    let start_ids: Vec<i64> = name_to_ids.get(symbol).cloned().unwrap_or_default();
+    // Start from definitions, not import bindings: a `from lib import util`
+    // binding named `util` must appear as a dependent (via imports), not as a
+    // conflated start node (Feature 7.8 / #37). Fall back to all matches if the
+    // name is only ever an import binding.
+    let all_ids: Vec<i64> = name_to_ids.get(symbol).cloned().unwrap_or_default();
+    let def_ids: Vec<i64> = all_ids
+        .iter()
+        .copied()
+        .filter(|id| detail.get(id).map_or(false, |d| d.1 != "import"))
+        .collect();
+    let start_ids = if def_ids.is_empty() { all_ids } else { def_ids };
     if start_ids.is_empty() {
         return Ok(PyList::empty(py).unbind());
     }

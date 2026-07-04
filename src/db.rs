@@ -55,6 +55,13 @@ const MIGRATIONS: &[&str] = &[
     r#"
     CREATE UNIQUE INDEX IF NOT EXISTS idx_edges_unique ON edges(src_id, dst_id, kind);
     "#,
+    // v3 — retain each import's original name and source module (Feature 7.8 /
+    // issue #37), so aliased imports (`import x as y`) can still resolve to the
+    // real definition and disambiguate call resolution.
+    r#"
+    ALTER TABLE symbols ADD COLUMN import_module TEXT;
+    ALTER TABLE symbols ADD COLUMN import_name TEXT;
+    "#,
 ];
 
 /// Apply any migrations the database has not yet seen, inside a single

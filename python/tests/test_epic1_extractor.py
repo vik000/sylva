@@ -57,8 +57,11 @@ class TestGeneral:
         syms = sylva.extract_symbols(str(p))
         assert len(syms) == 1
         s = syms[0]
-        # `line_end` was added by Feature 7.1 (issue #28).
-        assert set(s.keys()) == {"name", "kind", "line", "line_end", "docstring"}
+        # `line_end` added by 7.1 (#28); import_module/import_name by 7.8 (#37).
+        assert set(s.keys()) == {
+            "name", "kind", "line", "line_end", "docstring",
+            "import_module", "import_name",
+        }
         assert isinstance(s["line"], int)
 
     def test_line_numbers_are_one_based(self, tmp_path):

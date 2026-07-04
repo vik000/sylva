@@ -170,17 +170,35 @@ class TestErrorControl:
 
 
 class TestMigration:
-    def test_v2_unique_index_applies_incrementally(self, tmp_path):
-        # A database left at schema v1 (before the unique-edge index shipped)
-        # must upgrade to v2 on the next init_db — real users have such DBs.
-        db = _init(tmp_path)
+    def test_migrations_apply_incrementally_from_v1(self, tmp_path):
+        # Build a genuine v1-schema database by hand (no unique edge index, no
+        # import_* columns), as real users from an early release would have, and
+        # verify init_db upgrades it all the way to the current version (v3).
+        db = tmp_path / "sylva.db"
         conn = sqlite3.connect(str(db))
-        conn.execute("DROP INDEX IF EXISTS idx_edges_unique")
-        conn.execute("PRAGMA user_version = 1")
+        conn.executescript(
+            """
+            CREATE TABLE files (
+                id INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE,
+                hash TEXT, indexed_at TEXT
+            );
+            CREATE TABLE symbols (
+                id INTEGER PRIMARY KEY, file_id INTEGER NOT NULL,
+                name TEXT NOT NULL, kind TEXT NOT NULL,
+                line_start INTEGER, line_end INTEGER,
+                docstring TEXT, coverage_pct REAL
+            );
+            CREATE TABLE edges (
+                id INTEGER PRIMARY KEY, src_id INTEGER NOT NULL,
+                dst_id INTEGER NOT NULL, kind TEXT NOT NULL
+            );
+            PRAGMA user_version = 1;
+            """
+        )
         conn.commit()
         conn.close()
 
-        sylva.init_db(str(db))  # incremental upgrade v1 -> v2
+        sylva.init_db(str(db))  # incremental upgrade v1 -> v2 -> v3
 
         conn = sqlite3.connect(str(db))
         try:
@@ -189,7 +207,9 @@ class TestMigration:
                 "SELECT name FROM sqlite_master "
                 "WHERE type='index' AND name='idx_edges_unique'"
             ).fetchone()
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(symbols)")}
         finally:
             conn.close()
-        assert version == 2
-        assert idx is not None
+        assert version == 3
+        assert idx is not None  # v2 applied
+        assert {"import_module", "import_name"} <= cols  # v3 applied

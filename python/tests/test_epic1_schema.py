@@ -25,6 +25,9 @@ EXPECTED_COLUMNS = {
         "line_end",
         "docstring",
         "coverage_pct",
+        # Added by migration v3 (Feature 7.8 / #37).
+        "import_module",
+        "import_name",
     },
     "edges": {"id", "src_id", "dst_id", "kind"},
 }
@@ -80,8 +83,9 @@ class TestGeneral:
     def test_schema_version_recorded(self, tmp_path):
         db = tmp_path / "sylva.db"
         sylva.init_db(str(db))
-        # Migrations shipped: v1 (initial schema), v2 (unique edge index — 3.3).
-        assert _user_version(db) == 2
+        # Migrations shipped: v1 (schema), v2 (unique edge index — 3.3),
+        # v3 (import_module/import_name columns — 7.8).
+        assert _user_version(db) == 3
 
     def test_creates_db_in_cwd_without_parent(self, tmp_path, monkeypatch):
         # A bare filename (no directory component) must not error on the
