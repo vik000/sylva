@@ -1,9 +1,10 @@
 //! SQLite schema and migrations for the Sylva knowledge graph.
 //!
-//! The data model (see DESIGN.md) is three tables plus supporting indexes:
-//!   files   (id, path, hash, indexed_at)
-//!   symbols (id, file_id, name, kind, line_start, line_end, docstring, coverage_pct)
-//!   edges   (id, src_id, dst_id, kind)   -- kind: calls | imports | test_covers
+//! The data model (see DESIGN.md) is four tables plus supporting indexes:
+//!   files    (id, path, hash, indexed_at)
+//!   symbols  (id, file_id, name, kind, line_start, line_end, docstring, coverage_pct)
+//!   edges    (id, src_id, dst_id, kind)   -- kind: calls | imports | test_covers
+//!   dataflow (id, src_id, dst_id, param)  -- Feature 4.12 parameter pass-through
 //!
 //! Migrations are applied idempotently and tracked via SQLite's built-in
 //! `PRAGMA user_version`, so `init_db` is safe to call any number of times.
@@ -61,6 +62,22 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE symbols ADD COLUMN import_module TEXT;
     ALTER TABLE symbols ADD COLUMN import_name TEXT;
+    "#,
+    // v4 — static data-flow edges (Feature 4.12 / issue #53). Kept in their own
+    // table (not `edges`) because they carry a `param`: a row means "the caller
+    // passes its parameter `param` as an argument into the callee". The unique
+    // index makes re-indexing idempotent.
+    r#"
+    CREATE TABLE IF NOT EXISTS dataflow (
+        id      INTEGER PRIMARY KEY,
+        src_id  INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+        dst_id  INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+        param   TEXT NOT NULL
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_dataflow_unique ON dataflow(src_id, dst_id, param);
+    CREATE INDEX IF NOT EXISTS idx_dataflow_src ON dataflow(src_id);
+    CREATE INDEX IF NOT EXISTS idx_dataflow_dst ON dataflow(dst_id);
     "#,
 ];
 

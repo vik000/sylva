@@ -198,7 +198,7 @@ class TestMigration:
         conn.commit()
         conn.close()
 
-        sylva.init_db(str(db))  # incremental upgrade v1 -> v2 -> v3
+        sylva.init_db(str(db))  # incremental upgrade v1 -> v2 -> v3 -> v4
 
         conn = sqlite3.connect(str(db))
         try:
@@ -208,8 +208,12 @@ class TestMigration:
                 "WHERE type='index' AND name='idx_edges_unique'"
             ).fetchone()
             cols = {r[1] for r in conn.execute("PRAGMA table_info(symbols)")}
+            dataflow = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='dataflow'"
+            ).fetchone()
         finally:
             conn.close()
-        assert version == 3
+        assert version == 4
         assert idx is not None  # v2 applied
         assert {"import_module", "import_name"} <= cols  # v3 applied
+        assert dataflow is not None  # v4 applied

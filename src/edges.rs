@@ -161,6 +161,265 @@ fn collect_calls(node: Node, src: &[u8], out: &mut Vec<(i64, String)>) {
     }
 }
 
+/// The parameter names declared by a `function_definition`. Handles plain,
+/// typed, defaulted, and `*args`/`**kwargs` parameters by taking each
+/// parameter's first identifier (its `name` field when present).
+fn param_names(func: Node, src: &[u8]) -> HashSet<String> {
+    let mut names = HashSet::new();
+    if let Some(params) = func.child_by_field_name("parameters") {
+        let mut c = params.walk();
+        for p in params.named_children(&mut c) {
+            if p.kind() == "identifier" {
+                names.insert(node_text(p, src));
+            } else if let Some(n) = p.child_by_field_name("name") {
+                names.insert(node_text(n, src));
+            } else {
+                // typed_parameter / splat patterns: first identifier descendant.
+                let mut ic = p.walk();
+                let ident = p.named_children(&mut ic).find(|ch| ch.kind() == "identifier");
+                if let Some(id) = ident {
+                    names.insert(node_text(id, src));
+                }
+            }
+        }
+    }
+    names
+}
+
+/// Map each `function_definition`'s start line → its parameter names, so a call
+/// site can be attributed to the parameters of its innermost enclosing function.
+fn collect_func_params(node: Node, src: &[u8], out: &mut HashMap<i64, HashSet<String>>) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "function_definition" {
+            let start = child.start_position().row as i64 + 1;
+            out.insert(start, param_names(child, src));
+        }
+        collect_func_params(child, src, out);
+    }
+}
+
+/// Collect `(line, callee_name, arg_identifiers)` for every call site — like
+/// `collect_calls`, but also recording each argument that is a bare identifier
+/// (including the value of a `keyword_argument`), which is what parameter
+/// pass-through detection matches against (Feature 4.12).
+fn collect_calls_with_args(node: Node, src: &[u8], out: &mut Vec<(i64, String, Vec<String>)>) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "call" {
+            if let Some(func) = child.child_by_field_name("function") {
+                let name = match func.kind() {
+                    "identifier" => Some(node_text(func, src)),
+                    "attribute" => func.child_by_field_name("attribute").map(|a| node_text(a, src)),
+                    _ => None,
+                };
+                if let Some(name) = name {
+                    let mut args = Vec::new();
+                    if let Some(arglist) = child.child_by_field_name("arguments") {
+                        let mut ac = arglist.walk();
+                        for a in arglist.named_children(&mut ac) {
+                            match a.kind() {
+                                "identifier" => args.push(node_text(a, src)),
+                                "keyword_argument" => {
+                                    if let Some(v) = a.child_by_field_name("value") {
+                                        if v.kind() == "identifier" {
+                                            args.push(node_text(v, src));
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    out.push((child.start_position().row as i64 + 1, name, args));
+                }
+            }
+        }
+        collect_calls_with_args(child, src, out); // recurse: calls nest in args/bodies
+    }
+}
+
+/// Build static data-flow rows (Feature 4.12, tier 1). For each call site, if an
+/// argument is a bare identifier matching a parameter of the innermost enclosing
+/// **function**, record `(caller, callee, param)` in the `dataflow` table: the
+/// caller passes its parameter `param` onward into the callee.
+///
+/// Callee resolution reuses Feature 4.0 (import-aware, then same-file/unique
+/// global by name) so no false edges are invented. This is a deliberately
+/// **approximate** analysis: name-based only, with no aliasing/reassignment
+/// (`y = x; g(y)` is not followed) and no closure capture (a param is matched
+/// only to calls inside its own function, not nested inner functions). `DELETE`
+/// then `INSERT OR IGNORE` makes re-indexing idempotent. Returns rows written.
+#[pyfunction]
+pub fn build_dataflow(db_path: &str) -> PyResult<usize> {
+    if !Path::new(db_path).exists() {
+        return Err(PyOSError::new_err(format!("database not found: '{}'", db_path)));
+    }
+    let mut conn = Connection::open(db_path)
+        .map_err(|e| PyOSError::new_err(format!("cannot open database '{}': {}", db_path, e)))?;
+
+    let syms: Vec<SymRow> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, name, kind, file_id, line_start, line_end, import_module, import_name \
+                 FROM symbols",
+            )
+            .map_err(|e| PyRuntimeError::new_err(format!("failed to read symbols: {}", e)))?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(SymRow {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    kind: r.get(2)?,
+                    file_id: r.get(3)?,
+                    line_start: r.get(4)?,
+                    line_end: r.get(5)?,
+                    import_module: r.get(6)?,
+                    import_name: r.get(7)?,
+                })
+            })
+            .map_err(|e| PyRuntimeError::new_err(format!("failed to read symbols: {}", e)))?;
+        rows.collect::<Result<_, _>>()
+            .map_err(|e| PyRuntimeError::new_err(format!("failed to read symbols: {}", e)))?
+    };
+
+    let files: Vec<(i64, String)> = {
+        let mut stmt = conn
+            .prepare("SELECT id, path FROM files")
+            .map_err(|e| PyRuntimeError::new_err(format!("failed to read files: {}", e)))?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+            .map_err(|e| PyRuntimeError::new_err(format!("failed to read files: {}", e)))?;
+        rows.collect::<Result<_, _>>()
+            .map_err(|e| PyRuntimeError::new_err(format!("failed to read files: {}", e)))?
+    };
+    let files_by_id: HashMap<i64, String> = files.iter().cloned().collect();
+
+    // Definition targets by name, non-import symbols by file (caller lookup),
+    // and per-function parameter sets (built from the parse below).
+    let mut defs_by_name: HashMap<String, Vec<(i64, i64)>> = HashMap::new();
+    let mut by_file: HashMap<i64, Vec<usize>> = HashMap::new();
+    for (i, s) in syms.iter().enumerate() {
+        if s.kind == "function" || s.kind == "class" {
+            defs_by_name.entry(s.name.clone()).or_default().push((s.id, s.file_id));
+        }
+        if s.kind != "import" {
+            by_file.entry(s.file_id).or_default().push(i);
+        }
+    }
+
+    // Import targets per file, so `callee` resolution matches call-edge behaviour.
+    let mut import_targets: HashMap<i64, HashMap<String, i64>> = HashMap::new();
+    for s in syms.iter().filter(|s| s.kind == "import") {
+        let original = s.import_name.as_deref().unwrap_or(&s.name);
+        if original == "*" {
+            continue;
+        }
+        if let Resolution::Resolved(dst) =
+            resolve_import(&defs_by_name, &files_by_id, original, s.import_module.as_deref())
+        {
+            if dst != s.id {
+                import_targets.entry(s.file_id).or_default().insert(s.name.clone(), dst);
+            }
+        }
+    }
+
+    let mut parser = Parser::new();
+    parser
+        .set_language(&tree_sitter_python::LANGUAGE.into())
+        .map_err(|e| PyRuntimeError::new_err(format!("failed to load Python grammar: {}", e)))?;
+
+    let verbose = crate::verbose();
+    let mut skipped = 0usize;
+    // (caller_id, callee_id, param)
+    let mut rows: Vec<(i64, i64, String)> = Vec::new();
+
+    for (file_id, path) in &files {
+        let source = match std::fs::read_to_string(path) {
+            Ok(s) => s,
+            Err(_) => continue, // unreadable — skip (build_edges already reports)
+        };
+        let tree = match parser.parse(source.as_bytes(), None) {
+            Some(t) => t,
+            None => continue,
+        };
+        let bytes = source.as_bytes();
+
+        let mut func_params: HashMap<i64, HashSet<String>> = HashMap::new();
+        collect_func_params(tree.root_node(), bytes, &mut func_params);
+        let mut calls = Vec::new();
+        collect_calls_with_args(tree.root_node(), bytes, &mut calls);
+
+        let empty = Vec::new();
+        let candidates = by_file.get(file_id).unwrap_or(&empty);
+        let file_imports = import_targets.get(file_id);
+
+        for (line, callee, args) in calls {
+            if args.is_empty() {
+                continue;
+            }
+            // Attribute to the innermost enclosing symbol; only functions carry
+            // parameters, so a class-level call site has no pass-through.
+            let caller = match innermost(&syms, candidates, line) {
+                Some(s) if s.kind == "function" => s,
+                _ => continue,
+            };
+            let params = match caller.line_start.and_then(|ls| func_params.get(&ls)) {
+                Some(p) if !p.is_empty() => p,
+                _ => continue,
+            };
+            // Which of this call's arguments are the caller's own parameters?
+            let flowing: HashSet<&String> = args.iter().filter(|a| params.contains(*a)).collect();
+            if flowing.is_empty() {
+                continue;
+            }
+
+            // Resolve the callee once (import-aware, then same-file/unique global).
+            let dst = if let Some(dst) = file_imports.and_then(|m| m.get(&callee)) {
+                Some(*dst)
+            } else {
+                match resolve_def(&defs_by_name, &callee, Some(*file_id)) {
+                    Resolution::Resolved(dst) => Some(dst),
+                    _ => {
+                        skipped += 1;
+                        None
+                    }
+                }
+            };
+            if let Some(dst) = dst {
+                for param in flowing {
+                    rows.push((caller.id, dst, param.clone()));
+                }
+            }
+        }
+    }
+
+    let tx = conn
+        .transaction()
+        .map_err(|e| PyRuntimeError::new_err(format!("failed to begin transaction: {}", e)))?;
+    tx.execute("DELETE FROM dataflow", [])
+        .map_err(|e| PyRuntimeError::new_err(format!("failed to clear dataflow: {}", e)))?;
+
+    let mut written = 0usize;
+    {
+        let mut insert = tx
+            .prepare("INSERT OR IGNORE INTO dataflow (src_id, dst_id, param) VALUES (?1, ?2, ?3)")
+            .map_err(|e| PyRuntimeError::new_err(format!("failed to prepare insert: {}", e)))?;
+        for (src_id, dst_id, param) in &rows {
+            written += insert
+                .execute(params![src_id, dst_id, param])
+                .map_err(|e| PyRuntimeError::new_err(format!("failed to write dataflow: {}", e)))?;
+        }
+    }
+    tx.commit()
+        .map_err(|e| PyRuntimeError::new_err(format!("failed to commit dataflow: {}", e)))?;
+
+    if skipped > 0 && verbose {
+        eprintln!("sylva: build_dataflow: {} rows; {} unresolved callee(s) skipped", written, skipped);
+    }
+    Ok(written)
+}
+
 /// Build `calls` and `imports` edges for the indexed graph. Returns the number
 /// of edges written.
 #[pyfunction]

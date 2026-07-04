@@ -38,6 +38,7 @@ fn sylva(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(coverage::get_module_coverage, m)?)?;
     m.add_function(wrap_pyfunction!(testmap::map_tests_to_symbols, m)?)?;
     m.add_function(wrap_pyfunction!(edges::build_edges, m)?)?;
+    m.add_function(wrap_pyfunction!(edges::build_dataflow, m)?)?;
     m.add_function(wrap_pyfunction!(edges::trace_calls, m)?)?;
     m.add_function(wrap_pyfunction!(edges::blast_radius, m)?)?;
     m.add_function(wrap_pyfunction!(architecture::get_architecture, m)?)?;

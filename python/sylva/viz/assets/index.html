@@ -369,6 +369,10 @@ function select(n) {
     btn.textContent = "▸ Flow from here";
     btn.onclick = () => enterFlow(n.name);
     info.appendChild(btn);
+    const df = document.createElement("button");
+    df.textContent = "◆ Data flow";  // where this symbol's parameters flow (4.12)
+    df.onclick = () => enterData(n.name);
+    info.appendChild(df);
     // For test functions: the real execution path they exercised (4.11).
     if (n.name.startsWith("test")) {
       const eb = document.createElement("button");
@@ -431,6 +435,16 @@ async function enterExec(test) {
   catch (e) { return; }
   if (!data.nodes || !data.nodes.length) return;
   renderLayered(data.nodes, data.edges, `exec path · ${test} · ${data.nodes.length} symbols`);
+}
+
+// Feature 4.12 — where a symbol's parameters flow, as a layered flowchart.
+async function enterData(symbol) {
+  if (focusMode) exitFocus();
+  let data;
+  try { data = await (await fetch("dataflow?symbol=" + encodeURIComponent(symbol))).json(); }
+  catch (e) { return; }
+  if (!data.nodes || !data.nodes.length) return;
+  renderLayered(data.nodes, data.edges, `data flow from ${symbol} · ${data.nodes.length} nodes · ${data.edges.length} hops`);
 }
 
 function exitFlow() {

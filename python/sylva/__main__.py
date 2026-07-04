@@ -37,11 +37,12 @@ def _analyze(root, db_path):
                 print(f"sylva: skipping '{path}': {e}", file=sys.stderr)
 
     edges = sylva.build_edges(db_path)
+    flows = sylva.build_dataflow(db_path)  # Feature 4.12 — static parameter flow
 
     note = f" ({skipped} skipped)" if skipped else ""
     print(
         f"sylva: analyzed {len(files)} file(s){note}, "
-        f"{total_symbols} symbols, {edges} relationships -> {db_path}"
+        f"{total_symbols} symbols, {edges} relationships, {flows} data-flow(s) -> {db_path}"
     )
     print(f"sylva: now run  sylva serve-ui --db {db_path}")
     return 0

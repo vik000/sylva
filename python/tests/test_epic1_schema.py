@@ -84,8 +84,8 @@ class TestGeneral:
         db = tmp_path / "sylva.db"
         sylva.init_db(str(db))
         # Migrations shipped: v1 (schema), v2 (unique edge index — 3.3),
-        # v3 (import_module/import_name columns — 7.8).
-        assert _user_version(db) == 3
+        # v3 (import_module/import_name columns — 7.8), v4 (dataflow table — 4.12).
+        assert _user_version(db) == 4
 
     def test_creates_db_in_cwd_without_parent(self, tmp_path, monkeypatch):
         # A bare filename (no directory component) must not error on the

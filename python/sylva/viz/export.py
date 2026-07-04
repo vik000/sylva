@@ -414,6 +414,65 @@ def architecture(db_path):
     return sylva.get_architecture(db_path)
 
 
+def data_flow(db_path, symbol):
+    """Feature 4.12 — the static parameter-flow subgraph reachable from `symbol`,
+    as a layered flowchart. Reads the `dataflow` table (populated by Rust
+    `build_dataflow`): an edge src->dst means src passes a parameter into dst.
+
+    Starting from the symbol, BFS outbound over dataflow edges assigns each
+    reached node a `layer` (hop depth), reusing the 4.10 layering. Edges carry
+    the `param` that flows. Returns `{symbol, nodes: [{id, name, kind, file,
+    line, layer}], edges: [{source, target, param}]}`. An unknown symbol (or one
+    whose data flows nowhere) yields empty nodes/edges. Raises FileNotFoundError
+    if the database does not exist.
+    """
+    if not os.path.exists(db_path):
+        raise FileNotFoundError(f"database not found: {db_path}")
+
+    conn = sqlite3.connect(db_path)
+    try:
+        syms = conn.execute(
+            "SELECT s.id, s.name, s.kind, s.line_start, f.path "
+            "FROM symbols s JOIN files f ON f.id = s.file_id"
+        ).fetchall()
+        flow_rows = conn.execute("SELECT src_id, dst_id, param FROM dataflow").fetchall()
+    finally:
+        conn.close()
+
+    detail = {sid: (name, kind, line, path) for (sid, name, kind, line, path) in syms}
+    name_ids = {}
+    for sid, name, *_rest in syms:
+        name_ids.setdefault(name, []).append(sid)
+    adj = {}
+    for src, dst, _param in flow_rows:
+        adj.setdefault(src, []).append(dst)
+
+    roots = name_ids.get(symbol, [])
+    if not roots:
+        return {"symbol": symbol, "nodes": [], "edges": []}
+
+    layer = _bfs_layers(roots, adj)
+    reached = set(layer)
+    nodes = [
+        {
+            "id": sid,
+            "name": detail[sid][0],
+            "kind": detail[sid][1],
+            "file": detail[sid][3],
+            "line": detail[sid][2],
+            "layer": layer[sid],
+        }
+        for sid in layer
+    ]
+    nodes.sort(key=lambda n: (n["layer"], n["name"]))
+    edges = [
+        {"source": s, "target": t, "param": p}
+        for (s, t, p) in flow_rows
+        if s in reached and t in reached
+    ]
+    return {"symbol": symbol, "nodes": nodes, "edges": edges}
+
+
 def graph_version(db_path):
     """A cheap signature of the current graph state, for change detection.
 

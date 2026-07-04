@@ -22,6 +22,7 @@ from urllib.parse import parse_qs, urlparse
 from .export import (
     architecture,
     build_graph,
+    data_flow,
     exec_path,
     export_graph_json,
     flow_layout,
@@ -59,6 +60,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._serve_neighborhood()
         elif route == "/architecture-map":
             self._serve_architecture_map()
+        elif route == "/dataflow":
+            self._serve_dataflow()
         else:
             self._send_json(404, {"error": f"not found: {self.path}"})
 
@@ -143,6 +146,18 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._send_json(500, {"error": str(e)})
         except Exception as e:
             self._send_json(500, {"error": f"failed to build neighborhood: {e}"})
+
+    def _serve_dataflow(self):
+        symbol = parse_qs(urlparse(self.path).query).get("symbol", [None])[0]
+        if not symbol:
+            self._send_json(400, {"error": "missing required query parameter: symbol"})
+            return
+        try:
+            self._send_json(200, data_flow(self._db_path, symbol))
+        except FileNotFoundError as e:
+            self._send_json(500, {"error": str(e)})
+        except Exception as e:
+            self._send_json(500, {"error": f"failed to build data flow: {e}"})
 
     def _serve_architecture_map(self):
         level = parse_qs(urlparse(self.path).query).get("level", ["file"])[0]
