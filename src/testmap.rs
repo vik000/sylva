@@ -68,7 +68,9 @@ fn resolve_file(report_path: &str, files: &[(i64, String)]) -> Option<i64> {
 
     match matches.len() {
         0 => {
-            eprintln!("sylva: test-trace file '{}' matches no indexed file; skipping", report_path);
+            if crate::verbose() {
+                eprintln!("sylva: test-trace file '{}' matches no indexed file; skipping", report_path);
+            }
             None
         }
         1 => Some(matches[0].0),
@@ -77,11 +79,13 @@ fn resolve_file(report_path: &str, files: &[(i64, String)]) -> Option<i64> {
             if exact.len() == 1 {
                 Some(exact[0].0)
             } else {
-                eprintln!(
-                    "sylva: test-trace file '{}' ambiguously matches {} files; skipping",
-                    report_path,
-                    matches.len()
-                );
+                if crate::verbose() {
+                    eprintln!(
+                        "sylva: test-trace file '{}' ambiguously matches {} files; skipping",
+                        report_path,
+                        matches.len()
+                    );
+                }
                 None
             }
         }
@@ -167,15 +171,19 @@ pub fn map_tests_to_symbols(db_path: &str, trace: &Bound<'_, PyDict>) -> PyResul
             let src_id = match by_name.get(test_name).map(|v| v.as_slice()) {
                 Some([single]) => *single,
                 Some(many) if many.len() > 1 => {
-                    eprintln!(
-                        "sylva: test '{}' matches {} symbols; skipping (ambiguous)",
-                        test_name,
-                        many.len()
-                    );
+                    if crate::verbose() {
+                        eprintln!(
+                            "sylva: test '{}' matches {} symbols; skipping (ambiguous)",
+                            test_name,
+                            many.len()
+                        );
+                    }
                     continue;
                 }
                 _ => {
-                    eprintln!("sylva: test '{}' is not indexed as a symbol; skipping", test_name);
+                    if crate::verbose() {
+                        eprintln!("sylva: test '{}' is not indexed as a symbol; skipping", test_name);
+                    }
                     continue;
                 }
             };

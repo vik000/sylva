@@ -241,10 +241,12 @@ fn reconcile<'a>(
 
         let chosen = match matches.len() {
             0 => {
-                eprintln!(
-                    "sylva: coverage path '{}' matches no indexed file; skipping",
-                    report_path
-                );
+                if crate::verbose() {
+                    eprintln!(
+                        "sylva: coverage path '{}' matches no indexed file; skipping",
+                        report_path
+                    );
+                }
                 None
             }
             1 => Some(matches[0]),
@@ -254,11 +256,13 @@ fn reconcile<'a>(
                 if exact.len() == 1 {
                     Some(*exact[0])
                 } else {
-                    eprintln!(
-                        "sylva: coverage path '{}' ambiguously matches {} indexed files; skipping",
-                        report_path,
-                        matches.len()
-                    );
+                    if crate::verbose() {
+                        eprintln!(
+                            "sylva: coverage path '{}' ambiguously matches {} indexed files; skipping",
+                            report_path,
+                            matches.len()
+                        );
+                    }
                     None
                 }
             }

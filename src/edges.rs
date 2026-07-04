@@ -11,9 +11,11 @@
 //!     definition of the callee name (`calls` edge).
 //!
 //! Resolution is by name with ambiguous-skip: a unique matching definition wins;
-//! several same-named definitions are skipped and logged; unresolved names
-//! (builtins / external / not indexed) are skipped. This never invents a false
-//! edge, and self-calls (recursion) produce a self-edge. Edges use
+//! several same-named definitions are skipped; unresolved names (builtins /
+//! external / not indexed) are skipped. Skips are counted and reported as a
+//! single bounded summary (issue #39) — set `SYLVA_LOG` for per-reference
+//! detail. This never invents a false edge, and self-calls (recursion) produce
+//! a self-edge. Edges use
 //! `INSERT OR IGNORE` against the unique index (migration v2), so the pass is
 //! idempotent. Returns the number of edges written.
 //!
@@ -43,20 +45,20 @@ fn node_text(node: Node, src: &[u8]) -> String {
     node.utf8_text(src).unwrap_or("").to_string()
 }
 
+/// Outcome of resolving a referenced name to a definition. Kept silent here so
+/// the caller can aggregate counts and emit one bounded summary (issue #39).
+enum Resolution {
+    Resolved(i64),
+    Ambiguous,
+    Unresolved,
+}
+
 /// Resolve a referenced name to a unique definition (function/class) symbol id.
-/// Ambiguous (several same-named defs) or unresolved names yield None.
-fn resolve_def(defs_by_name: &HashMap<String, Vec<i64>>, name: &str) -> Option<i64> {
+fn resolve_def(defs_by_name: &HashMap<String, Vec<i64>>, name: &str) -> Resolution {
     match defs_by_name.get(name).map(Vec::as_slice) {
-        Some([only]) => Some(*only),
-        Some(many) if many.len() > 1 => {
-            eprintln!(
-                "sylva: reference '{}' matches {} definitions; skipping (ambiguous)",
-                name,
-                many.len()
-            );
-            None
-        }
-        _ => None,
+        Some([only]) => Resolution::Resolved(*only),
+        Some(many) if many.len() > 1 => Resolution::Ambiguous,
+        _ => Resolution::Unresolved,
     }
 }
 
@@ -158,6 +160,10 @@ pub fn build_edges(db_path: &str) -> PyResult<usize> {
         .set_language(&tree_sitter_python::LANGUAGE.into())
         .map_err(|e| PyRuntimeError::new_err(format!("failed to load Python grammar: {}", e)))?;
 
+    let verbose = crate::verbose();
+    let mut skipped_ambiguous = 0usize;
+    let mut skipped_unresolved = 0usize;
+
     // (src_id, dst_id) call edges, resolved.
     let mut call_edges: Vec<(i64, i64)> = Vec::new();
     for (file_id, path) in &files {
@@ -186,8 +192,20 @@ pub fn build_edges(db_path: &str) -> PyResult<usize> {
                 Some(s) => s,
                 None => continue, // call outside any symbol (module-level) — no src
             };
-            if let Some(dst) = resolve_def(&defs_by_name, &callee) {
-                call_edges.push((caller.id, dst));
+            match resolve_def(&defs_by_name, &callee) {
+                Resolution::Resolved(dst) => call_edges.push((caller.id, dst)),
+                Resolution::Ambiguous => {
+                    skipped_ambiguous += 1;
+                    if verbose {
+                        eprintln!("sylva: ambiguous call reference '{}'; skipping", callee);
+                    }
+                }
+                Resolution::Unresolved => {
+                    skipped_unresolved += 1;
+                    if verbose {
+                        eprintln!("sylva: unresolved call reference '{}'; skipping", callee);
+                    }
+                }
             }
         }
     }
@@ -208,12 +226,15 @@ pub fn build_edges(db_path: &str) -> PyResult<usize> {
 
         // Import edges: each import binding → the definition it names.
         for s in syms.iter().filter(|s| s.kind == "import") {
-            if let Some(dst) = resolve_def(&defs_by_name, &s.name) {
-                if dst != s.id {
+            match resolve_def(&defs_by_name, &s.name) {
+                Resolution::Resolved(dst) if dst != s.id => {
                     written += insert
                         .execute(params![s.id, dst, "imports"])
                         .map_err(|e| PyRuntimeError::new_err(format!("failed to write edge: {}", e)))?;
                 }
+                Resolution::Resolved(_) => {} // self-reference, skip
+                Resolution::Ambiguous => skipped_ambiguous += 1,
+                Resolution::Unresolved => skipped_unresolved += 1,
             }
         }
 
@@ -227,6 +248,17 @@ pub fn build_edges(db_path: &str) -> PyResult<usize> {
 
     tx.commit()
         .map_err(|e| PyRuntimeError::new_err(format!("failed to commit edges: {}", e)))?;
+
+    // One bounded summary instead of a line per skipped reference (issue #39).
+    if skipped_ambiguous + skipped_unresolved > 0 {
+        eprintln!(
+            "sylva: build_edges: {} edges; skipped {} ambiguous and {} unresolved reference(s){}",
+            written,
+            skipped_ambiguous,
+            skipped_unresolved,
+            if verbose { "" } else { " (set SYLVA_LOG=1 for per-reference detail)" }
+        );
+    }
 
     Ok(written)
 }

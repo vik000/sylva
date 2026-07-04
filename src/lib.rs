@@ -1,5 +1,12 @@
 use pyo3::prelude::*;
 
+/// Whether verbose per-item diagnostics are enabled. Off by default so normal
+/// runs emit only bounded summaries (issue #39); set `SYLVA_LOG` to opt in to
+/// per-reference / per-path detail.
+pub(crate) fn verbose() -> bool {
+    std::env::var("SYLVA_LOG").is_ok()
+}
+
 mod architecture;
 mod coverage;
 mod db;
