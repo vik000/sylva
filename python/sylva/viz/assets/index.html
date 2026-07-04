@@ -37,6 +37,12 @@
     color: var(--muted); pointer-events: none; }
   #empty.show { display: grid; }
   .hint { color: var(--muted); font-size: 11px; margin-top: 14px; }
+  .navhead { color: var(--ink); font-size: 11px; font-weight: 600; margin: 8px 0 4px; }
+  .navlist { max-height: 160px; overflow-y: auto; }
+  .navitem { padding: 3px 6px; border-radius: 5px; cursor: pointer; color: var(--muted);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .navitem:hover { background: #1f2430; color: var(--ink); }
+  .navitem .deg { color: var(--accent); float: right; margin-left: 8px; }
 </style>
 </head>
 <body>
@@ -52,6 +58,13 @@
     <div class="field">
       <label>Filter by name / file</label>
       <input id="filter" type="text" placeholder="e.g. util or src/foo.py" />
+    </div>
+    <div class="field" id="nav">
+      <label>Navigator</label>
+      <div class="navhead">Entry points</div>
+      <div id="nav-entries" class="navlist"><div class="row">loading…</div></div>
+      <div class="navhead">Hubs</div>
+      <div id="nav-hubs" class="navlist"><div class="row">loading…</div></div>
     </div>
     <div class="field">
       <label>View</label>
@@ -169,6 +182,7 @@ async function poll() {
       currentVersion = v;
       const g = await (await fetch("graph.json")).json();
       applyGraph(g, true);
+      loadArchitecture();
     }
   } catch (e) { /* transient; try again next tick */ }
 }
@@ -387,6 +401,52 @@ function exitFlow() {
 }
 document.getElementById("flow-back").addEventListener("click", exitFlow);
 
+// --- Feature 4.8: sidebar navigator (entry points, hubs) ------------------ //
+// Centre the view on the named symbol and select it, leaving any layered/module
+// view first so the node is actually on screen. The entry-point list then acts
+// as the launch point for "Flow from here" (4.10).
+function focusNode(name) {
+  if (flowMode) exitFlow();
+  if (moduleView) {
+    document.getElementById("module-view").checked = false;
+    moduleView = false; render(false);
+  }
+  const n = NODES.find(x => x.name === name);
+  if (!n) return;
+  view.k = Math.max(view.k, 1.3);
+  view.x = W / 2 - n.x * view.k;
+  view.y = H / 2 - n.y * view.k;
+  select(n);
+}
+
+function renderNavList(id, items, empty) {
+  const el = document.getElementById(id);
+  el.innerHTML = "";
+  if (!items || !items.length) { el.innerHTML = `<div class="row">${empty}</div>`; return; }
+  for (const it of items) {
+    const row = document.createElement("div");
+    row.className = "navitem";
+    row.title = (it.file || "") + " · " + it.kind;
+    if (it.degree != null) {
+      const d = document.createElement("span");
+      d.className = "deg"; d.textContent = it.degree;
+      row.appendChild(d);
+    }
+    row.appendChild(document.createTextNode(it.name));
+    row.onclick = () => focusNode(it.name);
+    el.appendChild(row);
+  }
+}
+
+async function loadArchitecture() {
+  let arch;
+  try { arch = await (await fetch("architecture")).json(); }
+  catch (e) { return; }
+  if (!arch || arch.error) return;
+  renderNavList("nav-entries", arch.entry_points, "No entry points.");
+  renderNavList("nav-hubs", arch.hubs, "No hubs.");
+}
+
 document.getElementById("filter").addEventListener("input", e => { filterText = e.target.value.trim().toLowerCase(); draw(); });
 for (const k of ["function", "class", "import"]) {
   document.getElementById("k-" + k).addEventListener("change", e => { kinds[k] = e.target.checked; draw(); });
@@ -406,6 +466,7 @@ function updateCovNote() {
 
 resize();
 load();
+loadArchitecture();
 </script>
 </body>
 </html>

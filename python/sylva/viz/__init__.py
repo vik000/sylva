@@ -7,6 +7,7 @@ HTTP server. See `export.build_graph` and `server.serve`.
 """
 
 from .export import (
+    architecture,
     build_graph,
     coverage_state,
     exec_path,
@@ -17,6 +18,7 @@ from .export import (
 from .server import make_server, serve
 
 __all__ = [
+    "architecture",
     "build_graph",
     "coverage_state",
     "exec_path",

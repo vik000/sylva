@@ -242,6 +242,23 @@ def exec_path(db_path, test):
     return {"test": test, "nodes": nodes, "edges": edges}
 
 
+def architecture(db_path):
+    """Feature 4.8 — the architecture summary that drives the sidebar navigator.
+
+    A thin reuse of Feature 4.3's `get_architecture` (Rust): returns
+    `{modules, hubs, entry_points}` so the UI can offer clickable entry points
+    and hubs to navigate the graph. No reimplementation — the ranking and
+    entry-point logic live in one place.
+
+    Raises FileNotFoundError if the database does not exist.
+    """
+    if not os.path.exists(db_path):
+        raise FileNotFoundError(f"database not found: {db_path}")
+    import sylva  # lazy: keeps the rest of the viz module Rust-free / importable
+
+    return sylva.get_architecture(db_path)
+
+
 def graph_version(db_path):
     """A cheap signature of the current graph state, for change detection.
 
