@@ -381,3 +381,125 @@ pub fn trace_calls(
     }
     Ok(list.unbind())
 }
+
+// --------------------------------------------------------------------------- //
+// Feature 4.2 — blast radius analysis
+// --------------------------------------------------------------------------- //
+
+/// Everything that would break if `symbol` changed: the full transitive set of
+/// symbols that depend on it, via inbound `calls` **and** `imports` edges.
+///
+/// Returns each affected symbol as `{name, kind, file, line, distance, via}`,
+/// where `distance` is the number of hops from the target (1 = a direct
+/// dependent) and `via` is the edge kind (`calls`/`imports`) it was first
+/// reached by. The target itself is not included, so a leaf symbol (nothing
+/// depends on it) returns an empty list. An unknown symbol also returns empty.
+/// A `visited` set makes the traversal finite despite cycles.
+///
+/// Note (issue #37): `imports` edges from Feature 4.0 are name-conflated with
+/// their target (and lost for aliased imports), so import relationships rarely
+/// surface here yet. The `imports` traversal is correct and will benefit once
+/// import-edge modeling is fixed.
+#[pyfunction]
+pub fn blast_radius(py: Python<'_>, db_path: &str, symbol: &str) -> PyResult<Py<PyList>> {
+    if !Path::new(db_path).exists() {
+        return Err(PyOSError::new_err(format!("database not found: '{}'", db_path)));
+    }
+    let conn = Connection::open(db_path)
+        .map_err(|e| PyOSError::new_err(format!("cannot open database '{}': {}", db_path, e)))?;
+
+    let mut detail: HashMap<i64, (String, String, Option<i64>, String)> = HashMap::new();
+    let mut name_to_ids: HashMap<String, Vec<i64>> = HashMap::new();
+    {
+        let mut stmt = conn
+            .prepare(
+                "SELECT s.id, s.name, s.kind, s.line_start, f.path \
+                 FROM symbols s JOIN files f ON f.id = s.file_id",
+            )
+            .map_err(|e| PyRuntimeError::new_err(format!("failed to read symbols: {}", e)))?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, Option<i64>>(3)?,
+                    r.get::<_, String>(4)?,
+                ))
+            })
+            .map_err(|e| PyRuntimeError::new_err(format!("failed to read symbols: {}", e)))?;
+        for row in rows {
+            let (id, name, kind, line, path) =
+                row.map_err(|e| PyRuntimeError::new_err(format!("failed to read symbols: {}", e)))?;
+            name_to_ids.entry(name.clone()).or_default().push(id);
+            detail.insert(id, (name, kind, line, path));
+        }
+    }
+
+    let start_ids: Vec<i64> = name_to_ids.get(symbol).cloned().unwrap_or_default();
+    if start_ids.is_empty() {
+        return Ok(PyList::empty(py).unbind());
+    }
+
+    // Inbound adjacency over calls + imports: for edge (src -> dst), `src`
+    // depends on `dst`, so record `dst -> (src, kind)`.
+    let mut inbound: HashMap<i64, Vec<(i64, &'static str)>> = HashMap::new();
+    {
+        let mut stmt = conn
+            .prepare("SELECT src_id, dst_id, kind FROM edges WHERE kind IN ('calls', 'imports')")
+            .map_err(|e| PyRuntimeError::new_err(format!("failed to read edges: {}", e)))?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?))
+            })
+            .map_err(|e| PyRuntimeError::new_err(format!("failed to read edges: {}", e)))?;
+        for row in rows {
+            let (src, dst, kind) =
+                row.map_err(|e| PyRuntimeError::new_err(format!("failed to read edges: {}", e)))?;
+            let via: &'static str = if kind == "imports" { "imports" } else { "calls" };
+            inbound.entry(dst).or_default().push((src, via));
+        }
+    }
+
+    // BFS outward from the target over dependents. Unbounded depth; `visited`
+    // guarantees termination. The target(s) are excluded from the output.
+    let mut visited: HashSet<i64> = start_ids.iter().copied().collect();
+    let mut frontier: Vec<i64> = start_ids.clone();
+    let mut affected: Vec<(i64, i64, &'static str)> = Vec::new();
+    let mut distance = 1;
+    while !frontier.is_empty() {
+        let mut next = Vec::new();
+        for node in &frontier {
+            if let Some(dependents) = inbound.get(node) {
+                for &(dep, via) in dependents {
+                    if visited.insert(dep) {
+                        affected.push((dep, distance, via));
+                        next.push(dep);
+                    }
+                }
+            }
+        }
+        frontier = next;
+        distance += 1;
+    }
+
+    affected.sort_by(|a, b| {
+        let name_a = detail.get(&a.0).map(|d| d.0.as_str()).unwrap_or("");
+        let name_b = detail.get(&b.0).map(|d| d.0.as_str()).unwrap_or("");
+        a.1.cmp(&b.1).then(name_a.cmp(name_b))
+    });
+
+    let list = PyList::empty(py);
+    for (id, dist, via) in affected {
+        let (name, kind, line, path) = detail.get(&id).expect("id came from detail");
+        let d = PyDict::new(py);
+        d.set_item("name", name)?;
+        d.set_item("kind", kind)?;
+        d.set_item("file", path)?;
+        d.set_item("line", *line)?;
+        d.set_item("distance", dist)?;
+        d.set_item("via", via)?;
+        list.append(d)?;
+    }
+    Ok(list.unbind())
+}
