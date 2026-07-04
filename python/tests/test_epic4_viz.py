@@ -232,10 +232,11 @@ class TestCli:
     def test_serve_ui_subcommand_registered(self):
         import sylva.__main__ as cli
 
-        # A missing --db makes argparse exit; presence of the subcommand means
-        # it parses far enough to require --db (SystemExit), not "invalid choice".
+        # --db now defaults, so `serve-ui` alone would start the (blocking)
+        # server. Verify the subcommand is registered without launching it, by
+        # passing a bad --port so argparse exits before serving.
         with pytest.raises(SystemExit):
-            cli.main(["serve-ui"])  # missing required --db
+            cli.main(["serve-ui", "--port", "not-a-number"])
 
     def test_export_viz_cli_writes_file(self, tmp_path):
         import sylva.__main__ as cli
