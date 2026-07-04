@@ -14,6 +14,7 @@ from .export import (
     export_graph_json,
     flow_layout,
     graph_version,
+    module_map,
     neighborhood,
 )
 from .server import make_server, serve
@@ -26,6 +27,7 @@ __all__ = [
     "export_graph_json",
     "flow_layout",
     "graph_version",
+    "module_map",
     "neighborhood",
     "make_server",
     "serve",

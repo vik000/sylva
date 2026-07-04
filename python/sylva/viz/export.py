@@ -242,6 +242,86 @@ def exec_path(db_path, test):
     return {"test": test, "nodes": nodes, "edges": edges}
 
 
+def module_map(db_path, level="file"):
+    """Feature 4.7 — a top-level architecture map: each file or package
+    (directory) is a node, with cross-group call/import edges aggregated.
+
+    Pure aggregation over the existing symbols + edges (no parsing). Grouping:
+      - `level="file"`    — one node per file path (`files`=1), matching 4.6's
+        `modules`.
+      - `level="package"` — one node per directory (`os.path.dirname`), the
+        natural package grain that collapses a large repo to a few dozen nodes;
+        `files` counts the files grouped into it.
+
+    Each node carries `{id, label, symbols, files}`. An edge A->B exists when any
+    symbol in group A calls/imports one in group B; `weight` = the count of such
+    cross-group symbol edges. Intra-group edges collapse away (no self-loops).
+
+    Returns `{level, nodes, edges}`. Raises ValueError on an unknown level;
+    FileNotFoundError if the database does not exist.
+    """
+    if level not in ("file", "package"):
+        raise ValueError(f"unknown level: {level!r} (expected 'file' or 'package')")
+    if not os.path.exists(db_path):
+        raise FileNotFoundError(f"database not found: {db_path}")
+
+    conn = sqlite3.connect(db_path)
+    try:
+        # One row per file, with its symbol count (files with no symbols included).
+        file_rows = conn.execute(
+            "SELECT f.id, f.path, COUNT(s.id) "
+            "FROM files f LEFT JOIN symbols s ON s.file_id = f.id "
+            "GROUP BY f.id"
+        ).fetchall()
+        # symbol id -> its file id, to map edges to groups.
+        sym_file = conn.execute("SELECT id, file_id FROM symbols").fetchall()
+        edges = conn.execute(
+            "SELECT src_id, dst_id FROM edges WHERE kind IN ('calls', 'imports')"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    def group_of_path(path):
+        if level == "file":
+            return path
+        d = os.path.dirname(path)
+        return d if d else "."  # top-level files share the '.' package
+
+    # Group id -> {symbols, files}; and file id -> group id.
+    groups = {}
+    file_group = {}
+    for fid, path, sym_count in file_rows:
+        gid = group_of_path(path)
+        file_group[fid] = gid
+        g = groups.setdefault(gid, {"symbols": 0, "files": 0})
+        g["symbols"] += sym_count
+        g["files"] += 1
+
+    sym_group = {sid: file_group.get(file_id) for sid, file_id in sym_file}
+
+    weights = {}
+    for src, dst in edges:
+        sg, tg = sym_group.get(src), sym_group.get(dst)
+        if sg is None or tg is None or sg == tg:
+            continue  # dangling or intra-group — collapses away
+        weights[(sg, tg)] = weights.get((sg, tg), 0) + 1
+
+    def label_of(gid):
+        parts = str(gid).replace("\\", "/").split("/")
+        parts = [p for p in parts if p]
+        return parts[-1] if parts else str(gid)
+
+    nodes = [
+        {"id": gid, "label": label_of(gid), "symbols": g["symbols"], "files": g["files"]}
+        for gid, g in sorted(groups.items())
+    ]
+    map_edges = [
+        {"source": s, "target": t, "weight": w}
+        for (s, t), w in sorted(weights.items())
+    ]
+    return {"level": level, "nodes": nodes, "edges": map_edges}
+
+
 def neighborhood(db_path, symbol, depth=1):
     """Feature 4.9 — the N-hop neighbourhood of `symbol`, for the focus view.
 

@@ -26,6 +26,7 @@ from .export import (
     export_graph_json,
     flow_layout,
     graph_version,
+    module_map,
     neighborhood,
 )
 
@@ -56,6 +57,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._serve_architecture()
         elif route == "/neighborhood":
             self._serve_neighborhood()
+        elif route == "/architecture-map":
+            self._serve_architecture_map()
         else:
             self._send_json(404, {"error": f"not found: {self.path}"})
 
@@ -140,6 +143,17 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._send_json(500, {"error": str(e)})
         except Exception as e:
             self._send_json(500, {"error": f"failed to build neighborhood: {e}"})
+
+    def _serve_architecture_map(self):
+        level = parse_qs(urlparse(self.path).query).get("level", ["file"])[0]
+        try:
+            self._send_json(200, module_map(self._db_path, level))
+        except ValueError as e:
+            self._send_json(400, {"error": str(e)})
+        except FileNotFoundError as e:
+            self._send_json(500, {"error": str(e)})
+        except Exception as e:
+            self._send_json(500, {"error": f"failed to build architecture map: {e}"})
 
     def _send_json(self, status, obj):
         body = json.dumps(obj).encode("utf-8")

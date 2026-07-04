@@ -75,6 +75,12 @@
     <div class="field">
       <label>View</label>
       <div class="toggle"><input type="checkbox" id="module-view"><span class="dot" style="background:#a371f7"></span>module view (collapse to files)</div>
+      <div class="toggle" id="map-level-wrap" style="display:none">group:
+        <select id="map-level">
+          <option value="file">by file</option>
+          <option value="package">by package (directory)</option>
+        </select>
+      </div>
     </div>
     <div class="field">
       <label>Show</label>
@@ -104,6 +110,10 @@ let NODES = [], LINKS = [], BY_ID = new Map(), ADJ = new Map();
 let view = { x: 0, y: 0, k: 1 };          // pan/zoom
 let selected = null, hoverId = null, currentVersion = null, coverageMode = false;
 let moduleView = false, flowMode = false;
+// Feature 4.7 — architecture map: module view can group by file (4.6 default)
+// or by package (directory). `MODULES_OVERRIDE` holds the fetched package-level
+// nodes/links when the coarser grouping is selected.
+let mapLevel = "file", MODULES_OVERRIDE = null;
 // Feature 4.9 — focus / neighbourhood mode: restrict the canvas to the N-hop
 // neighbourhood of a centre symbol. `focusSet` holds the visible node ids;
 // `pinned` nodes stay visible across focus changes; `focusHistory` is the
@@ -144,11 +154,14 @@ function render(preserve) {
 
   let src, links;
   if (moduleView) {
-    src = RAW.modules.map(m => ({
+    // File level (4.6) reads RAW.modules; package level (4.7) reads the fetched override.
+    const mods = MODULES_OVERRIDE ? MODULES_OVERRIDE.nodes : RAW.modules;
+    const mlinks = MODULES_OVERRIDE ? MODULES_OVERRIDE.links : RAW.module_links;
+    src = mods.map(m => ({
       id: m.id, name: moduleLabel(m.id), kind: "module", file: m.id,
       line: null, coverage: null, coverage_state: "none", degree: m.symbols, symbols: m.symbols,
     }));
-    links = RAW.module_links.map(l => ({ source: l.source, target: l.target, kind: "module", weight: l.weight }));
+    links = mlinks.map(l => ({ source: l.source, target: l.target, kind: "module", weight: l.weight }));
   } else {
     src = RAW.nodes;
     links = RAW.links;
@@ -195,6 +208,7 @@ async function poll() {
       const g = await (await fetch("graph.json")).json();
       applyGraph(g, true);
       loadArchitecture();
+      if (moduleView && mapLevel === "package") applyModuleMap();  // refresh coarser map
     }
   } catch (e) { /* transient; try again next tick */ }
 }
@@ -559,8 +573,29 @@ document.getElementById("cov-mode").addEventListener("change", e => {
 });
 document.getElementById("module-view").addEventListener("change", e => {
   if (focusMode) exitFocus();
-  moduleView = e.target.checked; selected = null; render(false);  // re-layout for the new view
+  moduleView = e.target.checked; selected = null;
+  document.getElementById("map-level-wrap").style.display = moduleView ? "flex" : "none";
+  if (moduleView) applyModuleMap(); else { MODULES_OVERRIDE = null; render(false); }
 });
+document.getElementById("map-level").addEventListener("change", e => {
+  mapLevel = e.target.value;
+  if (moduleView) applyModuleMap();
+});
+
+// Feature 4.7 — choose the module-view grouping. File level reuses the
+// in-graph 4.6 modules; package level fetches the coarser architecture map.
+async function applyModuleMap() {
+  if (mapLevel === "file") { MODULES_OVERRIDE = null; render(false); return; }
+  let data;
+  try { data = await (await fetch("architecture-map?level=" + mapLevel)).json(); }
+  catch (e) { MODULES_OVERRIDE = null; render(false); return; }
+  if (!data || data.error) { MODULES_OVERRIDE = null; render(false); return; }
+  MODULES_OVERRIDE = {
+    nodes: (data.nodes || []).map(n => ({ id: n.id, symbols: n.symbols })),
+    links: (data.edges || []).map(l => ({ source: l.source, target: l.target, weight: l.weight })),
+  };
+  render(false);
+}
 
 // Show an informative note when coverage mode is on but no node has data.
 function updateCovNote() {
