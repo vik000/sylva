@@ -59,6 +59,33 @@ def build_graph(db_path):
     return {"nodes": nodes, "links": links}
 
 
+def graph_version(db_path):
+    """A cheap signature of the current graph state, for change detection.
+
+    Combines symbol count, edge count, total coverage, and the latest index
+    time — so it changes when symbols/edges are added or removed, when coverage
+    is (re)applied, or when a file is re-indexed. Used by the live-updating UI.
+
+    Raises FileNotFoundError if the database does not exist.
+    """
+    if not os.path.exists(db_path):
+        raise FileNotFoundError(f"database not found: {db_path}")
+
+    conn = sqlite3.connect(db_path)
+    try:
+        sym_count, cov_sum = conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(coverage_pct), 0) FROM symbols"
+        ).fetchone()
+        edge_count = conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
+        last_indexed = conn.execute(
+            "SELECT COALESCE(MAX(indexed_at), '') FROM files"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    return {"version": f"{sym_count}:{edge_count}:{cov_sum}:{last_indexed}"}
+
+
 def export_graph_json(db_path, out_dir="visualisation"):
     """Write the graph to `<out_dir>/graph.json`, creating the folder.
 

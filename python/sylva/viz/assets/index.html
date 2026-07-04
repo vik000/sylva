@@ -68,7 +68,7 @@ let W = 0, H = 0, DPR = Math.max(1, window.devicePixelRatio || 1);
 
 let NODES = [], LINKS = [], BY_ID = new Map(), ADJ = new Map();
 let view = { x: 0, y: 0, k: 1 };          // pan/zoom
-let selected = null, hoverId = null;
+let selected = null, hoverId = null, currentVersion = null;
 const kinds = { function: true, class: true, import: true };
 let filterText = "";
 
@@ -80,10 +80,15 @@ function resize() {
 }
 window.addEventListener("resize", resize);
 
-async function load() {
-  const res = await fetch("graph.json");
-  const g = await res.json();
-  NODES = g.nodes.map(n => ({ ...n, x: (Math.random() - .5) * 600, y: (Math.random() - .5) * 600, vx: 0, vy: 0 }));
+// Apply a fetched graph. When `preserve` is true (a live update), existing
+// nodes keep their positions so the layout doesn't jump — only new nodes are
+// seeded randomly and the sim re-settles briefly.
+function applyGraph(g, preserve) {
+  const old = preserve ? new Map(NODES.map(n => [n.id, { x: n.x, y: n.y }])) : null;
+  NODES = g.nodes.map(n => {
+    const p = old && old.get(n.id);
+    return { ...n, x: p ? p.x : (Math.random() - .5) * 600, y: p ? p.y : (Math.random() - .5) * 600, vx: 0, vy: 0 };
+  });
   LINKS = g.links;
   BY_ID = new Map(NODES.map(n => [n.id, n]));
   ADJ = new Map(NODES.map(n => [n.id, new Set()]));
@@ -93,11 +98,34 @@ async function load() {
       ADJ.get(l.target).add(l.source);
     }
   }
+  if (selected) selected = BY_ID.get(selected.id) || null;
   document.getElementById("stats").textContent = `${NODES.length} symbols · ${LINKS.length} edges`;
   document.getElementById("empty").classList.toggle("show", NODES.length === 0);
-  if (NODES.length) { settle(); center(); }
+  if (NODES.length) { settle(preserve ? 60 : 150); if (!preserve) center(); }
   draw();
 }
+
+async function load() {
+  const g = await (await fetch("graph.json")).json();
+  applyGraph(g, false);
+  try { currentVersion = (await (await fetch("version")).json()).version; } catch (e) {}
+}
+
+// Poll for changes and live-update the diagram when the graph changes.
+async function poll() {
+  try {
+    const r = await fetch("version");
+    if (!r.ok) return;
+    const v = (await r.json()).version;
+    if (currentVersion === null) { currentVersion = v; return; }
+    if (v !== currentVersion) {
+      currentVersion = v;
+      const g = await (await fetch("graph.json")).json();
+      applyGraph(g, true);
+    }
+  } catch (e) { /* transient; try again next tick */ }
+}
+setInterval(poll, 2000);
 
 // --- from-scratch force simulation: settle then freeze -------------------- //
 function settle(ticks = 150) {

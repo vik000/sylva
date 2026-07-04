@@ -44,6 +44,10 @@ def main(argv=None):
     ui.add_argument("--port", type=int, default=7700, help="Port to serve on (default 7700)")
     ui.add_argument("--no-open", action="store_true", help="Do not open the browser")
 
+    ex = sub.add_parser("export-viz", help="Write visualisation/graph.json from the graph")
+    ex.add_argument("--db", required=True, help="Path to the sylva.db graph database")
+    ex.add_argument("--out", default="visualisation", help="Output directory (default visualisation)")
+
     args = parser.parse_args(argv)
 
     if args.command == "serve":
@@ -57,6 +61,17 @@ def main(argv=None):
         except OSError as e:
             print(f"sylva: {e}", file=sys.stderr)
             return 1
+
+    if args.command == "export-viz":
+        from .viz.export import export_graph_json
+
+        try:
+            out = export_graph_json(args.db, args.out)
+        except FileNotFoundError as e:
+            print(f"sylva: {e}", file=sys.stderr)
+            return 1
+        print(f"sylva: wrote {out}")
+        return 0
 
     parser.error(f"unknown command: {args.command}")  # unreachable via argparse
 

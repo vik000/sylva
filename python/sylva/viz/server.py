@@ -18,7 +18,7 @@ import os
 import webbrowser
 from functools import partial
 
-from .export import build_graph, export_graph_json
+from .export import build_graph, export_graph_json, graph_version
 
 ASSETS_DIR = os.path.join(os.path.dirname(__file__), "assets")
 
@@ -36,6 +36,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._serve_asset("index.html", "text/html; charset=utf-8")
         elif self.path == "/graph.json":
             self._serve_graph()
+        elif self.path == "/version":
+            self._serve_version()
         else:
             self._send_json(404, {"error": f"not found: {self.path}"})
 
@@ -62,6 +64,14 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._send_json(500, {"error": f"failed to build graph: {e}"})
             return
         self._send_json(200, graph)
+
+    def _serve_version(self):
+        try:
+            self._send_json(200, graph_version(self._db_path))
+        except FileNotFoundError as e:
+            self._send_json(500, {"error": str(e)})
+        except Exception as e:
+            self._send_json(500, {"error": f"failed to read version: {e}"})
 
     def _send_json(self, status, obj):
         body = json.dumps(obj).encode("utf-8")

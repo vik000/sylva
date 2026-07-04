@@ -15,7 +15,7 @@ import urllib.error
 import pytest
 
 import sylva
-from sylva.viz import build_graph, export_graph_json, make_server
+from sylva.viz import build_graph, export_graph_json, graph_version, make_server
 
 
 def _init(tmp_path):
@@ -187,6 +187,44 @@ class TestErrorControl:
             sock.close()
 
 
+class TestLiveUpdate:
+    def test_version_signature(self, tmp_path):
+        db = _init(tmp_path)
+        _seed(db)
+        v = graph_version(str(db))
+        assert "version" in v and isinstance(v["version"], str)
+
+    def test_version_changes_when_graph_changes(self, tmp_path):
+        db = _init(tmp_path)
+        _seed(db)
+        before = graph_version(str(db))["version"]
+        sylva.write_symbols(
+            str(db), "extra.py",
+            [{"name": "c", "kind": "function", "line": 1, "line_end": 1}],
+        )
+        after = graph_version(str(db))["version"]
+        assert before != after
+
+    def test_version_missing_db_raises(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            graph_version(str(tmp_path / "nope.db"))
+
+    def test_version_endpoint(self, tmp_path):
+        db = _init(tmp_path)
+        _seed(db)
+        with _Server(str(db)) as s:
+            status, body, ctype = _get(s.port, "/version")
+            assert status == 200
+            assert "application/json" in ctype
+            assert "version" in json.loads(body)
+
+    def test_version_endpoint_missing_db_500(self, tmp_path):
+        with _Server(str(tmp_path / "nope.db")) as s:
+            status, body, _ = _get(s.port, "/version")
+            assert status == 500
+            assert "error" in json.loads(body)
+
+
 class TestCli:
     def test_serve_ui_subcommand_registered(self):
         import sylva.__main__ as cli
@@ -195,3 +233,19 @@ class TestCli:
         # it parses far enough to require --db (SystemExit), not "invalid choice".
         with pytest.raises(SystemExit):
             cli.main(["serve-ui"])  # missing required --db
+
+    def test_export_viz_cli_writes_file(self, tmp_path):
+        import sylva.__main__ as cli
+
+        db = _init(tmp_path)
+        _seed(db)
+        out_dir = tmp_path / "viz_out"
+        rc = cli.main(["export-viz", "--db", str(db), "--out", str(out_dir)])
+        assert rc == 0
+        assert (out_dir / "graph.json").exists()
+
+    def test_export_viz_cli_missing_db(self, tmp_path):
+        import sylva.__main__ as cli
+
+        rc = cli.main(["export-viz", "--db", str(tmp_path / "nope.db")])
+        assert rc == 1
