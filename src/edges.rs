@@ -53,11 +53,28 @@ enum Resolution {
     Unresolved,
 }
 
-/// Resolve a referenced name to a unique definition (function/class) symbol id.
-fn resolve_def(defs_by_name: &HashMap<String, Vec<i64>>, name: &str) -> Resolution {
+/// Resolve a referenced name to a unique definition, as `(symbol_id, file_id)`
+/// pairs. When the name is globally ambiguous, prefer a definition in
+/// `caller_file` (issue #36): a call to `get()` inside a module that defines
+/// `get` resolves to *that* `get`, matching Python's module-scope resolution.
+/// This recovers local calls without ever inventing a false edge.
+fn resolve_def(
+    defs_by_name: &HashMap<String, Vec<(i64, i64)>>,
+    name: &str,
+    caller_file: Option<i64>,
+) -> Resolution {
     match defs_by_name.get(name).map(Vec::as_slice) {
-        Some([only]) => Resolution::Resolved(*only),
-        Some(many) if many.len() > 1 => Resolution::Ambiguous,
+        Some([(only, _)]) => Resolution::Resolved(*only),
+        Some(many) if many.len() > 1 => {
+            if let Some(file) = caller_file {
+                let same_file: Vec<i64> =
+                    many.iter().filter(|(_, f)| *f == file).map(|(id, _)| *id).collect();
+                if same_file.len() == 1 {
+                    return Resolution::Resolved(same_file[0]);
+                }
+            }
+            Resolution::Ambiguous
+        }
         _ => Resolution::Unresolved,
     }
 }
@@ -143,11 +160,11 @@ pub fn build_edges(db_path: &str) -> PyResult<usize> {
 
     // Definitions by name (resolution targets) and non-import symbols by file
     // (caller-span lookup).
-    let mut defs_by_name: HashMap<String, Vec<i64>> = HashMap::new();
+    let mut defs_by_name: HashMap<String, Vec<(i64, i64)>> = HashMap::new();
     let mut by_file: HashMap<i64, Vec<usize>> = HashMap::new();
     for (i, s) in syms.iter().enumerate() {
         if s.kind == "function" || s.kind == "class" {
-            defs_by_name.entry(s.name.clone()).or_default().push(s.id);
+            defs_by_name.entry(s.name.clone()).or_default().push((s.id, s.file_id));
         }
         if s.kind != "import" {
             by_file.entry(s.file_id).or_default().push(i);
@@ -192,7 +209,7 @@ pub fn build_edges(db_path: &str) -> PyResult<usize> {
                 Some(s) => s,
                 None => continue, // call outside any symbol (module-level) — no src
             };
-            match resolve_def(&defs_by_name, &callee) {
+            match resolve_def(&defs_by_name, &callee, Some(*file_id)) {
                 Resolution::Resolved(dst) => call_edges.push((caller.id, dst)),
                 Resolution::Ambiguous => {
                     skipped_ambiguous += 1;
@@ -226,7 +243,9 @@ pub fn build_edges(db_path: &str) -> PyResult<usize> {
 
         // Import edges: each import binding → the definition it names.
         for s in syms.iter().filter(|s| s.kind == "import") {
-            match resolve_def(&defs_by_name, &s.name) {
+            // Imports point cross-file by nature, so same-file preference does
+            // not apply — resolve globally (None).
+            match resolve_def(&defs_by_name, &s.name, None) {
                 Resolution::Resolved(dst) if dst != s.id => {
                     written += insert
                         .execute(params![s.id, dst, "imports"])
