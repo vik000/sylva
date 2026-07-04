@@ -106,9 +106,62 @@ fn symbol_at(syms: &[Sym], line: i64) -> Option<&Sym> {
         })
 }
 
+/// Reduce a coverage-context label / pytest node-id to `(function_name, file)`.
+/// Real coverage.py `--contexts` labels look like
+/// `tests/test_x.py::TestC::test_m[param]|run`; this yields `("test_m",
+/// Some("tests/test_x.py"))`. A bare symbol name (no `::`) yields `(name, None)`.
+fn normalise_test(label: &str) -> (String, Option<String>) {
+    // Drop a trailing coverage phase suffix (`|run`, `|setup`, ...).
+    let node = label.split('|').next().unwrap_or(label);
+    let mut parts = node.split("::");
+    let first = parts.next().unwrap_or(node);
+    let rest: Vec<&str> = parts.collect();
+    let strip_params = |s: &str| s.split('[').next().unwrap_or(s).to_string();
+    match rest.last() {
+        Some(item) => (strip_params(item), Some(first.to_string())),
+        None => (strip_params(first), None),
+    }
+}
+
+/// Resolve a trace label to the test's own symbol id. A file hint (from a
+/// node-id) disambiguates same-named tests across files; otherwise a unique
+/// name match is required.
+fn resolve_test_src(
+    by_name: &HashMap<String, Vec<(i64, i64)>>,
+    files_by_id: &HashMap<i64, String>,
+    label: &str,
+) -> Option<i64> {
+    let (func, file_hint) = normalise_test(label);
+    let candidates = by_name.get(&func)?;
+
+    if let Some(file) = &file_hint {
+        let wanted = components(file);
+        let matched: Vec<i64> = candidates
+            .iter()
+            .filter(|(_, fid)| {
+                files_by_id.get(fid).map_or(false, |p| suffix_match(&components(p), &wanted))
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        if matched.len() == 1 {
+            return Some(matched[0]);
+        }
+        // Fall through to a unique name match if the file didn't disambiguate.
+    }
+
+    match candidates.as_slice() {
+        [(only, _)] => Some(*only),
+        _ => None, // not found, or ambiguous with no usable file hint
+    }
+}
+
 /// Build `test_covers` edges from test functions to the symbols they exercised.
 /// Returns the number of new edges written (duplicates are ignored, not
 /// counted).
+///
+/// Trace keys may be plain test names or coverage.py `--contexts` node-ids
+/// (`tests/test_x.py::test_m|run`); node-ids also disambiguate same-named tests
+/// by file (Feature 3.3 follow-up / issue #35).
 #[pyfunction]
 pub fn map_tests_to_symbols(db_path: &str, trace: &Bound<'_, PyDict>) -> PyResult<usize> {
     let trace = extract_trace(trace)?;
@@ -127,9 +180,12 @@ pub fn map_tests_to_symbols(db_path: &str, trace: &Bound<'_, PyDict>) -> PyResul
             .map_err(|e| PyRuntimeError::new_err(format!("failed to read files: {}", e)))?
     };
 
-    // Symbols grouped by file (for span lookup) and by name (for test src).
+    let files_by_id: HashMap<i64, String> = files.iter().cloned().collect();
+
+    // Symbols grouped by file (span lookup) and by name → (id, file_id) for
+    // test-src resolution (the file id lets us disambiguate same-named tests).
     let mut by_file: HashMap<i64, Vec<Sym>> = HashMap::new();
-    let mut by_name: HashMap<String, Vec<i64>> = HashMap::new();
+    let mut by_name: HashMap<String, Vec<(i64, i64)>> = HashMap::new();
     {
         let mut stmt = conn
             .prepare("SELECT id, name, file_id, line_start, line_end FROM symbols")
@@ -148,7 +204,7 @@ pub fn map_tests_to_symbols(db_path: &str, trace: &Bound<'_, PyDict>) -> PyResul
         for row in rows {
             let (id, name, file_id, ls, le) =
                 row.map_err(|e| PyRuntimeError::new_err(format!("failed to read symbols: {}", e)))?;
-            by_name.entry(name.clone()).or_default().push(id);
+            by_name.entry(name.clone()).or_default().push((id, file_id));
             by_file.entry(file_id).or_default().push((id, name, ls, le));
         }
     }
@@ -167,22 +223,16 @@ pub fn map_tests_to_symbols(db_path: &str, trace: &Bound<'_, PyDict>) -> PyResul
             .map_err(|e| PyRuntimeError::new_err(format!("failed to prepare insert: {}", e)))?;
 
         for (test_name, files_map) in &trace {
-            // Resolve the test's own symbol (edge src).
-            let src_id = match by_name.get(test_name).map(|v| v.as_slice()) {
-                Some([single]) => *single,
-                Some(many) if many.len() > 1 => {
+            // Resolve the test's own symbol (edge src), accepting either a plain
+            // name or a pytest node-id (file-disambiguated).
+            let src_id = match resolve_test_src(&by_name, &files_by_id, test_name) {
+                Some(id) => id,
+                None => {
                     if crate::verbose() {
                         eprintln!(
-                            "sylva: test '{}' matches {} symbols; skipping (ambiguous)",
-                            test_name,
-                            many.len()
+                            "sylva: test '{}' did not resolve to a unique symbol; skipping",
+                            test_name
                         );
-                    }
-                    continue;
-                }
-                _ => {
-                    if crate::verbose() {
-                        eprintln!("sylva: test '{}' is not indexed as a symbol; skipping", test_name);
                     }
                     continue;
                 }
