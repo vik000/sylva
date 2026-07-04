@@ -226,11 +226,8 @@ fn extract_coverage(coverage: &Bound<'_, PyDict>) -> PyResult<Coverage> {
 /// Reconcile each report file to a single graph file id, using exact match
 /// first and falling back to a unique suffix match. Report paths that match no
 /// graph file, or ambiguously match several, are logged and skipped.
-fn reconcile<'a>(
-    cov: &'a Coverage,
-    files: &[(i64, String)],
-) -> HashMap<i64, &'a HashMap<i64, bool>> {
-    let mut mapping: HashMap<i64, &HashMap<i64, bool>> = HashMap::new();
+fn reconcile(cov: &Coverage, files: &[(i64, String)]) -> HashMap<i64, HashMap<i64, bool>> {
+    let mut mapping: HashMap<i64, HashMap<i64, bool>> = HashMap::new();
 
     for (report_path, lines) in cov {
         let report_components = components(report_path);
@@ -269,7 +266,13 @@ fn reconcile<'a>(
         };
 
         if let Some((file_id, _)) = chosen {
-            mapping.insert(*file_id, lines);
+            // Merge (OR) rather than overwrite, so two report paths that
+            // reconcile to the same graph file combine deterministically
+            // instead of last-wins (issue #34).
+            let entry = mapping.entry(*file_id).or_default();
+            for (&line, &covered) in lines.iter() {
+                entry.entry(line).and_modify(|c| *c |= covered).or_insert(covered);
+            }
         }
     }
 
@@ -309,15 +312,28 @@ fn symbol_pct(lines: &HashMap<i64, bool>, start: i64, end: i64) -> Option<f64> {
 /// updated independently, so a failure on one is logged and skipped without
 /// aborting the rest.
 ///
-/// Known limitations (tracked in issue #34): if two report entries suffix-match
-/// the *same* graph file, the last one wins nondeterministically; and coverage
-/// is not reset for files absent from a later report (stale values persist).
+/// By default (`reset=True`) all `coverage_pct` are cleared to NULL first, so
+/// the result reflects exactly this report — a file dropped from a later report
+/// no longer keeps stale coverage (issue #34). Pass `reset=False` to apply
+/// additively (accumulate several partial reports). Report paths that reconcile
+/// to the same graph file are merged (OR), not last-wins.
 #[pyfunction]
-pub fn apply_coverage(db_path: &str, coverage: &Bound<'_, PyDict>) -> PyResult<usize> {
+#[pyo3(signature = (db_path, coverage, reset=true))]
+pub fn apply_coverage(
+    db_path: &str,
+    coverage: &Bound<'_, PyDict>,
+    reset: bool,
+) -> PyResult<usize> {
     let cov = extract_coverage(coverage)?;
 
     let conn = Connection::open(db_path)
         .map_err(|e| PyOSError::new_err(format!("cannot open database '{}': {}", db_path, e)))?;
+
+    // Clear stale coverage so the DB reflects only this report.
+    if reset {
+        conn.execute("UPDATE symbols SET coverage_pct = NULL", [])
+            .map_err(|e| PyRuntimeError::new_err(format!("failed to reset coverage: {}", e)))?;
+    }
 
     // Load the graph's file records once.
     let files: Vec<(i64, String)> = {
