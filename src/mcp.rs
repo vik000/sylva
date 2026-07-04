@@ -25,6 +25,8 @@
 //! - `get_coverage` (params: name) — a symbol's coverage %, or null (Feature 3.5)
 //! - `get_uncovered_paths` (no params) — symbols with 0% coverage (Feature 3.5)
 //! - `get_test_coverage` (params: name) — tests that exercise a symbol (Feature 3.5)
+//! - `trace_calls` / `blast_radius` / `get_architecture` — graph traversal (Feature 8.2)
+//! - `get_source` (params: name, or file+start+end) — current source of a symbol (Feature 8.4)
 //!
 //! `get_callers` / `get_dependencies` read the `edges` table, which is not yet
 //! populated by the indexer (see issue #27). Their query logic is exercised
@@ -200,6 +202,71 @@ fn test_coverage_query(db_path: &str, name: &str) -> Result<Value, String> {
     Ok(Value::Array(out))
 }
 
+/// Read a 1-based inclusive line span from a file, returning the joined source.
+/// A span past EOF yields the empty string; an end beyond the file is clamped.
+/// Feature 8.4: source is read on demand, so it always reflects the current file.
+fn read_span(file: &str, start: i64, end: i64) -> Result<String, String> {
+    if start < 1 {
+        return Err(format!("invalid start line: {}", start));
+    }
+    let content =
+        std::fs::read_to_string(file).map_err(|e| format!("cannot read file '{}': {}", file, e))?;
+    let lines: Vec<&str> = content.lines().collect();
+    let s = (start as usize) - 1;
+    if s >= lines.len() {
+        return Ok(String::new()); // span begins past EOF
+    }
+    let e = (end.max(start) as usize).min(lines.len());
+    Ok(lines[s..e].join("\n"))
+}
+
+/// `get_source` (name form) — the current source of each symbol matching `name`,
+/// read from its `line_start`..`line_end` span. Symbols with a NULL span are
+/// skipped; an unknown name yields an empty array (not an error). A missing or
+/// unreadable file surfaces as an error (wrapped as JSON-RPC by the caller).
+fn source_by_name(db_path: &str, name: &str) -> Result<Value, String> {
+    let conn = open_db(db_path)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT s.name, s.kind, f.path, s.line_start, s.line_end \
+             FROM symbols s JOIN files f ON f.id = s.file_id \
+             WHERE s.name = ?1 AND s.line_start IS NOT NULL \
+             ORDER BY f.path, s.line_start",
+        )
+        .map_err(|e| format!("failed to prepare query: {}", e))?;
+    let rows = stmt
+        .query_map(params![name], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, Option<i64>>(4)?,
+            ))
+        })
+        .map_err(|e| format!("query failed: {}", e))?;
+
+    let mut out = Vec::new();
+    for row in rows {
+        let (sname, kind, file, start, end) =
+            row.map_err(|e| format!("failed to read row: {}", e))?;
+        let end = end.unwrap_or(start); // NULL line_end → single-line span
+        let code = read_span(&file, start, end)?;
+        out.push(json!({
+            "name": sname, "kind": kind, "file": file,
+            "line_start": start, "line_end": end, "code": code,
+        }));
+    }
+    Ok(Value::Array(out))
+}
+
+/// `get_source` (range form) — an arbitrary `start`..`end` slice of `file`,
+/// returned as a single-element array for a uniform result shape.
+fn source_range(file: &str, start: i64, end: i64) -> Result<Value, String> {
+    let code = read_span(file, start, end)?;
+    Ok(json!([{ "file": file, "line_start": start, "line_end": end, "code": code }]))
+}
+
 /// The MCP protocol version this server advertises in `initialize`.
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 
@@ -246,6 +313,17 @@ fn tools_list() -> Value {
           "inputSchema": json!({
               "type": "object",
               "properties": { "hub_limit": { "type": "integer", "description": "Max hubs to return (default 10)" } }
+          }) },
+        // Feature 8.4 — fetch a symbol's (or a range's) current source code.
+        { "name": "get_source", "description": "Fetch the current source code of a symbol, or an explicit file range.",
+          "inputSchema": json!({
+              "type": "object",
+              "properties": {
+                  "name": { "type": "string", "description": "Symbol name (name form)" },
+                  "file": { "type": "string", "description": "File path (range form)" },
+                  "start": { "type": "integer", "description": "1-based start line (range form)" },
+                  "end": { "type": "integer", "description": "1-based end line, inclusive (range form)" }
+              }
           }) }
     ])
 }
@@ -334,6 +412,27 @@ fn dispatch_tool(
         "get_coverage" => need_name(coverage_query),
         "get_test_coverage" => need_name(test_coverage_query),
         "get_uncovered_paths" => uncovered_paths_query(db_path).map_err(|m| (SERVER_ERROR, m)),
+
+        // Feature 8.4 — `get_source`: range form when `file` is given, else name form.
+        "get_source" => {
+            if let Some(file) = args.get("file").and_then(Value::as_str) {
+                match (
+                    args.get("start").and_then(Value::as_i64),
+                    args.get("end").and_then(Value::as_i64),
+                ) {
+                    (Some(s), Some(e)) => source_range(file, s, e).map_err(|m| (SERVER_ERROR, m)),
+                    _ => Err((
+                        INVALID_PARAMS,
+                        "Invalid params: range form requires integer 'start' and 'end'".to_string(),
+                    )),
+                }
+            } else {
+                match name_from(args) {
+                    Some(name) => source_by_name(db_path, name).map_err(|m| (SERVER_ERROR, m)),
+                    None => Err(invalid_name()),
+                }
+            }
+        }
 
         // --- Feature 8.2: graph-traversal tools (reuse existing functions) ---
         "trace_calls" => {
