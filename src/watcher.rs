@@ -40,14 +40,16 @@ pub fn reindex_path(py: Python<'_>, db_path: &str, file_path: &str) -> PyResult<
     if !is_python_file(Path::new(file_path)) {
         return Ok(false);
     }
-    // Decide (read-only) before doing any work.
-    if !crate::hash::file_needs_reindex(db_path, file_path)? {
+    // Hash once and thread it through the decision and the checkpoint, so both
+    // agree on exactly one digest even if the file changes underneath (#29).
+    let hash = crate::hash::file_hash(file_path)?;
+    if !crate::hash::file_needs_reindex(db_path, file_path, Some(hash.clone()))? {
         return Ok(false);
     }
     // Extract → write → checkpoint, reusing the existing pipeline functions.
     let symbols = crate::extractor::extract_symbols(py, file_path)?;
     crate::writer::write_symbols(db_path, file_path, symbols.bind(py))?;
-    crate::hash::mark_indexed(db_path, file_path)?;
+    crate::hash::mark_indexed(db_path, file_path, Some(hash))?;
     Ok(true)
 }
 

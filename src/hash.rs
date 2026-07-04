@@ -86,14 +86,32 @@ fn store_hash_with_retry(conn: &Connection, path: &str, hash: &str) {
     }
 }
 
+/// SHA-256 (lowercase hex) of a file's contents. Exposed so a caller can hash
+/// once and thread the exact value through the decision and the checkpoint,
+/// closing the re-hash race (issue #29).
+#[pyfunction]
+pub fn file_hash(file_path: &str) -> PyResult<String> {
+    hash_file(file_path)
+}
+
 /// Return whether `file_path` needs to be (re)indexed: true if it is new or its
 /// contents changed since the stored hash, false if unchanged.
 ///
-/// Read-only: this makes no changes to the database. Persisting the "indexed"
-/// state is the job of `mark_indexed`, called after a successful index.
+/// Read-only: this makes no changes to the database. Pass `hash` (from
+/// `file_hash`) to compare a precomputed digest without re-reading the file, so
+/// the decision and the later `mark_indexed` agree on exactly one hash.
+/// Persisting the "indexed" state is the job of `mark_indexed`.
 #[pyfunction]
-pub fn file_needs_reindex(db_path: &str, file_path: &str) -> PyResult<bool> {
-    let current = hash_file(file_path)?;
+#[pyo3(signature = (db_path, file_path, hash=None))]
+pub fn file_needs_reindex(
+    db_path: &str,
+    file_path: &str,
+    hash: Option<String>,
+) -> PyResult<bool> {
+    let current = match hash {
+        Some(h) => h,
+        None => hash_file(file_path)?,
+    };
     let conn = open_db(db_path)?;
 
     // stored:
@@ -109,16 +127,25 @@ pub fn file_needs_reindex(db_path: &str, file_path: &str) -> PyResult<bool> {
     Ok(!matches!(stored, Some(Some(ref h)) if *h == current))
 }
 
-/// Record that `file_path` has been successfully indexed, by persisting the
-/// SHA-256 of its current contents. Call this only AFTER the (re)index write
-/// has succeeded, so a failure between the reindex decision and this checkpoint
-/// leaves the file flagged for reindex rather than silently skipped.
+/// Record that `file_path` has been successfully indexed, by persisting its
+/// SHA-256. Call this only AFTER the (re)index write has succeeded, so a failure
+/// between the reindex decision and this checkpoint leaves the file flagged for
+/// reindex rather than silently skipped.
+///
+/// Pass `hash` (from `file_hash`) — the exact digest of the content that was
+/// indexed — to store *that* rather than re-hashing here; this closes the race
+/// where the file changes between the index write and the checkpoint (issue
+/// #29). If omitted, the current contents are re-hashed.
 ///
 /// Best-effort persistence: a write failure is retried once and then logged,
 /// never raised — the worst case is a harmless re-index next run.
 #[pyfunction]
-pub fn mark_indexed(db_path: &str, file_path: &str) -> PyResult<()> {
-    let current = hash_file(file_path)?;
+#[pyo3(signature = (db_path, file_path, hash=None))]
+pub fn mark_indexed(db_path: &str, file_path: &str, hash: Option<String>) -> PyResult<()> {
+    let current = match hash {
+        Some(h) => h,
+        None => hash_file(file_path)?,
+    };
     let conn = open_db(db_path)?;
     store_hash_with_retry(&conn, file_path, &current);
     Ok(())
