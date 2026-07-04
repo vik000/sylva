@@ -31,10 +31,12 @@
 //! against edges seeded directly in tests; on a freshly-indexed repo they
 //! return an empty list until edge population lands.
 
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use pyo3::types::{PyBool, PyDict, PyList};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 // JSON-RPC error codes (standard + one app-specific server error).
 const PARSE_ERROR: i64 = -32700;
@@ -225,38 +227,71 @@ fn tools_list() -> Value {
         { "name": "get_test_coverage", "description": "Tests that exercise the given symbol.",
           "inputSchema": str_arg("name", "Symbol name") },
         { "name": "get_uncovered_paths", "description": "Symbols known to be untested (0% coverage).",
-          "inputSchema": json!({ "type": "object", "properties": {} }) }
+          "inputSchema": json!({ "type": "object", "properties": {} }) },
+        // Feature 8.2 — graph-traversal tools now on the MCP surface.
+        { "name": "trace_calls", "description": "Trace call chains from a symbol (inbound/outbound/both) to a depth.",
+          "inputSchema": json!({
+              "type": "object",
+              "properties": {
+                  "symbol": { "type": "string", "description": "Symbol to trace from" },
+                  "direction": { "type": "string", "enum": ["inbound", "outbound", "both"],
+                                 "description": "Traversal direction (default 'both')" },
+                  "depth": { "type": "integer", "description": "Max hops (default 3)" }
+              },
+              "required": ["symbol"]
+          }) },
+        { "name": "blast_radius", "description": "Everything that would break if the symbol's signature changed.",
+          "inputSchema": str_arg("symbol", "Symbol whose dependents to compute") },
+        { "name": "get_architecture", "description": "Top-level view: modules, hubs, and entry points.",
+          "inputSchema": json!({
+              "type": "object",
+              "properties": { "hub_limit": { "type": "integer", "description": "Max hubs to return (default 10)" } }
+          }) }
     ])
 }
 
-/// Dispatch a tool by name to its query. `name_arg` is the single string
-/// argument (`name`/`symbol`) most tools need. Returns the raw tool result, or
-/// `(json_rpc_code, message)` on failure — shared by the plain-method framing
-/// and `tools/call` so both behave identically.
-fn dispatch_tool(db_path: &str, tool: &str, name_arg: Option<&str>) -> Result<Value, (i64, String)> {
-    let need_name = |f: fn(&str, &str) -> Result<Value, String>| match name_arg {
-        Some(name) => f(db_path, name).map_err(|m| (SERVER_ERROR, m)),
-        None => Err((
-            INVALID_PARAMS,
-            "Invalid params: expected a 'name' or 'symbol' string".to_string(),
-        )),
-    };
-    match tool {
-        "search_symbol" | "get_callers" | "get_dependencies" => {
-            let sql = sql_for(tool).expect("matched a known tool");
-            match name_arg {
-                Some(name) => run_query(db_path, sql, name).map_err(|m| (SERVER_ERROR, m)),
-                None => Err((
-                    INVALID_PARAMS,
-                    "Invalid params: expected a 'name' or 'symbol' string".to_string(),
-                )),
-            }
-        }
-        "get_coverage" => need_name(coverage_query),
-        "get_test_coverage" => need_name(test_coverage_query),
-        "get_uncovered_paths" => uncovered_paths_query(db_path).map_err(|m| (SERVER_ERROR, m)),
-        other => Err((METHOD_NOT_FOUND, format!("Unknown tool: {}", other))),
+/// Convert a Python value (as produced by the graph-traversal tools) into a
+/// `serde_json::Value`, so their existing tested logic is reused rather than
+/// re-implemented. Handles the flat scalars / lists / dicts these tools return.
+fn py_to_json(obj: &Bound<'_, PyAny>) -> Value {
+    if obj.is_none() {
+        return Value::Null;
     }
+    if let Ok(b) = obj.downcast::<PyBool>() {
+        return json!(b.is_true());
+    }
+    if let Ok(i) = obj.extract::<i64>() {
+        return json!(i);
+    }
+    if let Ok(f) = obj.extract::<f64>() {
+        return json!(f);
+    }
+    if let Ok(s) = obj.extract::<String>() {
+        return json!(s);
+    }
+    if let Ok(list) = obj.downcast::<PyList>() {
+        return Value::Array(list.iter().map(|it| py_to_json(&it)).collect());
+    }
+    if let Ok(dict) = obj.downcast::<PyDict>() {
+        let mut map = serde_json::Map::new();
+        for (k, v) in dict.iter() {
+            let key = k.extract::<String>().unwrap_or_else(|_| k.to_string());
+            map.insert(key, py_to_json(&v));
+        }
+        return Value::Object(map);
+    }
+    json!(obj.to_string())
+}
+
+/// Map a `PyErr` from a called tool to a JSON-RPC `(code, message)`: a
+/// `ValueError` (bad argument) → invalid params; anything else → server error.
+fn pyerr_to_rpc(py: Python<'_>, e: PyErr) -> (i64, String) {
+    let code = if e.is_instance_of::<PyValueError>(py) {
+        INVALID_PARAMS
+    } else {
+        SERVER_ERROR
+    };
+    (code, e.value(py).to_string())
 }
 
 /// Extract the `name`/`symbol` string argument from a params object.
@@ -267,12 +302,70 @@ fn name_from(params: &Value) -> Option<&str> {
         .and_then(Value::as_str)
 }
 
+/// Dispatch a tool by name against `args` (the tool's argument object). Returns
+/// the raw tool result, or `(json_rpc_code, message)` on failure — shared by the
+/// plain-method framing and `tools/call` so both behave identically. The
+/// graph-traversal tools (Feature 8.2) reuse the existing PyO3 functions and
+/// convert their results, rather than re-implementing traversal here.
+fn dispatch_tool(
+    py: Python<'_>,
+    db_path: &str,
+    tool: &str,
+    args: &Value,
+) -> Result<Value, (i64, String)> {
+    let invalid_name = || {
+        (
+            INVALID_PARAMS,
+            "Invalid params: expected a 'name' or 'symbol' string".to_string(),
+        )
+    };
+    let need_name = |f: fn(&str, &str) -> Result<Value, String>| match name_from(args) {
+        Some(name) => f(db_path, name).map_err(|m| (SERVER_ERROR, m)),
+        None => Err(invalid_name()),
+    };
+    match tool {
+        "search_symbol" | "get_callers" | "get_dependencies" => {
+            let sql = sql_for(tool).expect("matched a known tool");
+            match name_from(args) {
+                Some(name) => run_query(db_path, sql, name).map_err(|m| (SERVER_ERROR, m)),
+                None => Err(invalid_name()),
+            }
+        }
+        "get_coverage" => need_name(coverage_query),
+        "get_test_coverage" => need_name(test_coverage_query),
+        "get_uncovered_paths" => uncovered_paths_query(db_path).map_err(|m| (SERVER_ERROR, m)),
+
+        // --- Feature 8.2: graph-traversal tools (reuse existing functions) ---
+        "trace_calls" => {
+            let symbol = name_from(args).ok_or_else(invalid_name)?;
+            let direction = args.get("direction").and_then(Value::as_str).unwrap_or("both");
+            let depth = args.get("depth").and_then(Value::as_i64).unwrap_or(3);
+            crate::edges::trace_calls(py, db_path, symbol, direction, depth)
+                .map(|r| py_to_json(r.bind(py)))
+                .map_err(|e| pyerr_to_rpc(py, e))
+        }
+        "blast_radius" => {
+            let symbol = name_from(args).ok_or_else(invalid_name)?;
+            crate::edges::blast_radius(py, db_path, symbol)
+                .map(|r| py_to_json(r.bind(py)))
+                .map_err(|e| pyerr_to_rpc(py, e))
+        }
+        "get_architecture" => {
+            let hub_limit = args.get("hub_limit").and_then(Value::as_u64).unwrap_or(10) as usize;
+            crate::architecture::get_architecture(py, db_path, hub_limit)
+                .map(|r| py_to_json(r.bind(py)))
+                .map_err(|e| pyerr_to_rpc(py, e))
+        }
+        other => Err((METHOD_NOT_FOUND, format!("Unknown tool: {}", other))),
+    }
+}
+
 /// Handle a single JSON-RPC request against the graph database and return the
 /// JSON-RPC response as a string. Never raises — all failures become JSON-RPC
 /// error responses. A JSON-RPC *notification* (e.g. `notifications/initialized`)
 /// returns an empty string, signalling the serve loop to write no response.
 #[pyfunction]
-pub fn handle_request(db_path: &str, request: &str) -> String {
+pub fn handle_request(py: Python<'_>, db_path: &str, request: &str) -> String {
     let req: Value = match serde_json::from_str(request) {
         Ok(v) => v,
         Err(_) => return err_response(Value::Null, PARSE_ERROR, "Parse error: invalid JSON"),
@@ -314,7 +407,7 @@ pub fn handle_request(db_path: &str, request: &str) -> String {
                 }
             };
             let arguments = params_val.get("arguments").cloned().unwrap_or(Value::Null);
-            return match dispatch_tool(db_path, tool, name_from(&arguments)) {
+            return match dispatch_tool(py, db_path, tool, &arguments) {
                 // MCP wraps a tool result as text content.
                 Ok(result) => ok_response(
                     id,
@@ -328,7 +421,7 @@ pub fn handle_request(db_path: &str, request: &str) -> String {
         }
 
         // --- Plain JSON-RPC framing (Feature 1.6, kept working) -------------
-        _ => match dispatch_tool(db_path, method, name_from(&params_val)) {
+        _ => match dispatch_tool(py, db_path, method, &params_val) {
             Ok(result) => ok_response(id, result),
             // Preserve the original "Method not found" wording for plain calls.
             Err((METHOD_NOT_FOUND, _)) => {
@@ -337,4 +430,60 @@ pub fn handle_request(db_path: &str, request: &str) -> String {
             Err((code, msg)) => err_response(id, code, &msg),
         },
     }
+}
+
+/// Resolve `path` to an absolute path without requiring it to exist (unlike
+/// `canonicalize`): an already-absolute path is returned as-is; a relative one
+/// is joined onto the current working directory.
+fn absolutise(path: &str) -> PathBuf {
+    let p = Path::new(path);
+    if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        std::env::current_dir().map(|cwd| cwd.join(p)).unwrap_or_else(|_| p.to_path_buf())
+    }
+}
+
+/// Feature 8.2 — write a per-project MCP scaffold into `out_dir`.
+///
+/// Writes `<out_dir>/mcp.json` (a Claude Code / MCP-client server config that
+/// launches `sylva serve` against this repo's db, by **absolute** path so it
+/// works from any client cwd) and `<out_dir>/tools.json` (the advertised tool
+/// manifest, consumed by Feature 8.3). Idempotent: re-running overwrites with
+/// identical content. Returns the path to the written `mcp.json`.
+///
+/// Interpretation (A) from issue #41: this wires Sylva's existing *query* tools
+/// to the graph — it does not turn the analysed repo's own functions into
+/// executable tools.
+#[pyfunction]
+#[pyo3(signature = (db_path, out_dir=".codemcp"))]
+pub fn init_mcp(db_path: &str, out_dir: &str) -> PyResult<String> {
+    use pyo3::exceptions::PyOSError;
+
+    std::fs::create_dir_all(out_dir)
+        .map_err(|e| PyOSError::new_err(format!("cannot create '{}': {}", out_dir, e)))?;
+
+    let abs_db = absolutise(db_path);
+    let abs_db_str = abs_db.to_string_lossy().to_string();
+
+    let config = json!({
+        "mcpServers": {
+            "sylva": {
+                "command": "sylva",
+                "args": ["serve", "--db", abs_db_str]
+            }
+        }
+    });
+    let cfg_path = Path::new(out_dir).join("mcp.json");
+    std::fs::write(&cfg_path, serde_json::to_string_pretty(&config).unwrap())
+        .map_err(|e| PyOSError::new_err(format!("cannot write '{}': {}", cfg_path.display(), e)))?;
+
+    // Tool manifest (Feature 8.3 consumes this to represent accessible tools).
+    let manifest = json!({ "tools": tools_list() });
+    let manifest_path = Path::new(out_dir).join("tools.json");
+    std::fs::write(&manifest_path, serde_json::to_string_pretty(&manifest).unwrap()).map_err(
+        |e| PyOSError::new_err(format!("cannot write '{}': {}", manifest_path.display(), e)),
+    )?;
+
+    Ok(cfg_path.to_string_lossy().to_string())
 }

@@ -88,6 +88,10 @@ def main(argv=None):
     ex.add_argument("--db", default=DEFAULT_DB, help=f"Graph database path (default {DEFAULT_DB})")
     ex.add_argument("--out", default="visualisation", help="Output directory (default visualisation)")
 
+    im = sub.add_parser("init-mcp", help="Write a per-project MCP scaffold for agent access")
+    im.add_argument("--db", default=DEFAULT_DB, help=f"Graph database path (default {DEFAULT_DB})")
+    im.add_argument("--out", default=".codemcp", help="Output directory (default .codemcp)")
+
     args = parser.parse_args(argv)
 
     if args.command == "analyze":
@@ -114,6 +118,16 @@ def main(argv=None):
             print(f"sylva: {e}", file=sys.stderr)
             return 1
         print(f"sylva: wrote {out}")
+        return 0
+
+    if args.command == "init-mcp":
+        try:
+            cfg = sylva.init_mcp(args.db, args.out)
+        except OSError as e:
+            print(f"sylva: {e}", file=sys.stderr)
+            return 1
+        print(f"sylva: wrote MCP scaffold -> {cfg}")
+        print("sylva: add its contents to your Claude Code / MCP client config to query this codebase.")
         return 0
 
     parser.error(f"unknown command: {args.command}")  # unreachable via argparse
