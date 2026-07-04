@@ -61,6 +61,8 @@ def _serve(db_path):
         if not line:
             continue
         response = sylva.handle_request(db_path, line)
+        if not response:
+            continue  # JSON-RPC notification (e.g. notifications/initialized): no reply
         sys.stdout.write(response + "\n")
         sys.stdout.flush()
     return 0

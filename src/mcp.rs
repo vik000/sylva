@@ -5,10 +5,18 @@
 //! Python without spawning a process. The actual stdio serve loop is a thin
 //! wrapper in `python/sylva/__main__.py` (`sylva serve --db ...`).
 //!
-//! Protocol: plain JSON-RPC 2.0. Every call returns a valid JSON-RPC response
+//! Protocol: JSON-RPC 2.0. Every call returns a valid JSON-RPC response
 //! string — protocol problems (bad JSON, unknown method, bad params, missing
 //! database) are reported as JSON-RPC `error` objects, never as panics or
 //! Python exceptions.
+//!
+//! Two framings are supported over the same dispatch (Feature 7.4 / issue #31):
+//! - **Plain JSON-RPC** — one method per tool (`{"method":"search_symbol",
+//!   "params":{"name":...}}`). The original Feature 1.6 surface, kept working.
+//! - **MCP framing** — real MCP clients (Claude Code, Cursor) speak
+//!   `initialize` (handshake), `tools/list` (discovery with input schemas), and
+//!   `tools/call` (`{"name":..., "arguments":{...}}`). `notifications/initialized`
+//!   is accepted as a no-op (a JSON-RPC notification → no response).
 //!
 //! Tools:
 //! - `search_symbol` (params: name)  — symbols matching a name
@@ -190,9 +198,79 @@ fn test_coverage_query(db_path: &str, name: &str) -> Result<Value, String> {
     Ok(Value::Array(out))
 }
 
+/// The MCP protocol version this server advertises in `initialize`.
+const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
+
+/// The advertised tool catalogue for `tools/list`: name, description, and a JSON
+/// Schema for each tool's arguments. Every tool here is dispatchable by both the
+/// plain method framing and `tools/call`.
+fn tools_list() -> Value {
+    // A one-string-argument schema, reused by the symbol tools.
+    let str_arg = |field: &str, desc: &str| {
+        json!({
+            "type": "object",
+            "properties": { field: { "type": "string", "description": desc } },
+            "required": [field]
+        })
+    };
+    json!([
+        { "name": "search_symbol", "description": "Find symbols matching a name.",
+          "inputSchema": str_arg("name", "Symbol name to search for") },
+        { "name": "get_callers", "description": "Symbols that call the given symbol.",
+          "inputSchema": str_arg("symbol", "Symbol whose callers to list") },
+        { "name": "get_dependencies", "description": "Symbols the given symbol calls or imports.",
+          "inputSchema": str_arg("symbol", "Symbol whose dependencies to list") },
+        { "name": "get_coverage", "description": "A symbol's coverage percentage, or null.",
+          "inputSchema": str_arg("name", "Symbol name") },
+        { "name": "get_test_coverage", "description": "Tests that exercise the given symbol.",
+          "inputSchema": str_arg("name", "Symbol name") },
+        { "name": "get_uncovered_paths", "description": "Symbols known to be untested (0% coverage).",
+          "inputSchema": json!({ "type": "object", "properties": {} }) }
+    ])
+}
+
+/// Dispatch a tool by name to its query. `name_arg` is the single string
+/// argument (`name`/`symbol`) most tools need. Returns the raw tool result, or
+/// `(json_rpc_code, message)` on failure — shared by the plain-method framing
+/// and `tools/call` so both behave identically.
+fn dispatch_tool(db_path: &str, tool: &str, name_arg: Option<&str>) -> Result<Value, (i64, String)> {
+    let need_name = |f: fn(&str, &str) -> Result<Value, String>| match name_arg {
+        Some(name) => f(db_path, name).map_err(|m| (SERVER_ERROR, m)),
+        None => Err((
+            INVALID_PARAMS,
+            "Invalid params: expected a 'name' or 'symbol' string".to_string(),
+        )),
+    };
+    match tool {
+        "search_symbol" | "get_callers" | "get_dependencies" => {
+            let sql = sql_for(tool).expect("matched a known tool");
+            match name_arg {
+                Some(name) => run_query(db_path, sql, name).map_err(|m| (SERVER_ERROR, m)),
+                None => Err((
+                    INVALID_PARAMS,
+                    "Invalid params: expected a 'name' or 'symbol' string".to_string(),
+                )),
+            }
+        }
+        "get_coverage" => need_name(coverage_query),
+        "get_test_coverage" => need_name(test_coverage_query),
+        "get_uncovered_paths" => uncovered_paths_query(db_path).map_err(|m| (SERVER_ERROR, m)),
+        other => Err((METHOD_NOT_FOUND, format!("Unknown tool: {}", other))),
+    }
+}
+
+/// Extract the `name`/`symbol` string argument from a params object.
+fn name_from(params: &Value) -> Option<&str> {
+    params
+        .get("name")
+        .or_else(|| params.get("symbol"))
+        .and_then(Value::as_str)
+}
+
 /// Handle a single JSON-RPC request against the graph database and return the
 /// JSON-RPC response as a string. Never raises — all failures become JSON-RPC
-/// error responses.
+/// error responses. A JSON-RPC *notification* (e.g. `notifications/initialized`)
+/// returns an empty string, signalling the serve loop to write no response.
 #[pyfunction]
 pub fn handle_request(db_path: &str, request: &str) -> String {
     let req: Value = match serde_json::from_str(request) {
@@ -207,55 +285,56 @@ pub fn handle_request(db_path: &str, request: &str) -> String {
         None => return err_response(id, INVALID_REQUEST, "Invalid Request: missing 'method'"),
     };
 
-    // Most tools take a single string argument, under either `name` or `symbol`.
     let params_val = req.get("params").cloned().unwrap_or(Value::Null);
-    let name_arg = params_val
-        .get("name")
-        .or_else(|| params_val.get("symbol"))
-        .and_then(Value::as_str);
 
-    // A tool requiring a name arg: run `f(name)`, or fail with invalid params.
-    macro_rules! with_name {
-        ($f:expr) => {
-            match name_arg {
-                Some(name) => $f(db_path, name),
+    match method {
+        // --- MCP framing (Feature 7.4) --------------------------------------
+        "initialize" => {
+            return ok_response(
+                id,
+                json!({
+                    "protocolVersion": MCP_PROTOCOL_VERSION,
+                    "capabilities": { "tools": {} },
+                    "serverInfo": { "name": "sylva", "version": env!("CARGO_PKG_VERSION") }
+                }),
+            );
+        }
+        // Notifications carry no id and expect no response.
+        "notifications/initialized" | "initialized" => return String::new(),
+        "tools/list" => return ok_response(id, json!({ "tools": tools_list() })),
+        "tools/call" => {
+            let tool = match params_val.get("name").and_then(Value::as_str) {
+                Some(t) => t,
                 None => {
                     return err_response(
                         id,
                         INVALID_PARAMS,
-                        "Invalid params: expected a 'name' or 'symbol' string",
+                        "Invalid params: 'tools/call' requires a tool 'name'",
                     )
                 }
-            }
-        };
-    }
-
-    let outcome: Result<Value, String> = match method {
-        // Feature 1.6 — symbol/graph tools (all share the symbol-list shape).
-        "search_symbol" | "get_callers" | "get_dependencies" => {
-            let sql = sql_for(method).expect("method matched above");
-            match name_arg {
-                Some(name) => run_query(db_path, sql, name),
-                None => {
-                    return err_response(
-                        id,
-                        INVALID_PARAMS,
-                        "Invalid params: expected a 'name' or 'symbol' string",
-                    )
-                }
-            }
+            };
+            let arguments = params_val.get("arguments").cloned().unwrap_or(Value::Null);
+            return match dispatch_tool(db_path, tool, name_from(&arguments)) {
+                // MCP wraps a tool result as text content.
+                Ok(result) => ok_response(
+                    id,
+                    json!({
+                        "content": [{ "type": "text", "text": result.to_string() }],
+                        "isError": false
+                    }),
+                ),
+                Err((code, msg)) => err_response(id, code, &msg),
+            };
         }
-        // Feature 3.5 — coverage tools.
-        "get_coverage" => with_name!(coverage_query),
-        "get_test_coverage" => with_name!(test_coverage_query),
-        "get_uncovered_paths" => uncovered_paths_query(db_path),
-        _ => {
-            return err_response(id, METHOD_NOT_FOUND, &format!("Method not found: {}", method))
-        }
-    };
 
-    match outcome {
-        Ok(result) => ok_response(id, result),
-        Err(msg) => err_response(id, SERVER_ERROR, &msg),
+        // --- Plain JSON-RPC framing (Feature 1.6, kept working) -------------
+        _ => match dispatch_tool(db_path, method, name_from(&params_val)) {
+            Ok(result) => ok_response(id, result),
+            // Preserve the original "Method not found" wording for plain calls.
+            Err((METHOD_NOT_FOUND, _)) => {
+                err_response(id, METHOD_NOT_FOUND, &format!("Method not found: {}", method))
+            }
+            Err((code, msg)) => err_response(id, code, &msg),
+        },
     }
 }
