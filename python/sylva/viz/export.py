@@ -107,6 +107,73 @@ def build_graph(db_path):
     }
 
 
+def flow_layout(db_path, entry):
+    """Feature 4.10 — the reachable outbound call subgraph from `entry`, as a
+    layered flowchart: each node gets a `layer` (BFS depth from the entry), plus
+    the call edges among the reached set. Cycles terminate via the visited set.
+
+    Returns `{entry, nodes: [{id, name, kind, file, line, layer}], edges:
+    [{source, target}]}`. An unknown entry yields empty nodes/edges.
+    Raises FileNotFoundError if the database does not exist.
+    """
+    if not os.path.exists(db_path):
+        raise FileNotFoundError(f"database not found: {db_path}")
+
+    conn = sqlite3.connect(db_path)
+    try:
+        syms = conn.execute(
+            "SELECT s.id, s.name, s.kind, s.line_start, f.path "
+            "FROM symbols s JOIN files f ON f.id = s.file_id"
+        ).fetchall()
+        edges = conn.execute("SELECT src_id, dst_id FROM edges WHERE kind = 'calls'").fetchall()
+    finally:
+        conn.close()
+
+    detail = {sid: (name, kind, line, path) for (sid, name, kind, line, path) in syms}
+    name_ids = {}
+    for sid, name, *_ in syms:
+        name_ids.setdefault(name, []).append(sid)
+    adj = {}
+    for src, dst in edges:
+        adj.setdefault(src, []).append(dst)
+
+    roots = name_ids.get(entry, [])
+    if not roots:
+        return {"entry": entry, "nodes": [], "edges": []}
+
+    # BFS layering: layer = shortest hop count from an entry root.
+    layer = {r: 0 for r in roots}
+    frontier = list(roots)
+    depth = 1
+    while frontier:
+        nxt = []
+        for u in frontier:
+            for v in adj.get(u, []):
+                if v not in layer:
+                    layer[v] = depth
+                    nxt.append(v)
+        frontier = nxt
+        depth += 1
+
+    reached = set(layer)
+    nodes = [
+        {
+            "id": sid,
+            "name": detail[sid][0],
+            "kind": detail[sid][1],
+            "file": detail[sid][3],
+            "line": detail[sid][2],
+            "layer": layer[sid],
+        }
+        for sid in layer
+    ]
+    nodes.sort(key=lambda n: (n["layer"], n["name"]))
+    flow_edges = [
+        {"source": s, "target": t} for (s, t) in edges if s in reached and t in reached
+    ]
+    return {"entry": entry, "nodes": nodes, "edges": flow_edges}
+
+
 def graph_version(db_path):
     """A cheap signature of the current graph state, for change detection.
 

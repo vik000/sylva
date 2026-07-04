@@ -24,6 +24,9 @@
   input[type=text] { width: 100%; padding: 6px 8px; background: #0d0f16; color: var(--ink);
     border: 1px solid var(--line); border-radius: 6px; outline: none; }
   input[type=text]:focus { border-color: var(--accent); }
+  button { margin-top: 8px; padding: 6px 10px; background: #1f2430; color: var(--ink);
+    border: 1px solid var(--line); border-radius: 6px; cursor: pointer; font: inherit; }
+  button:hover { border-color: var(--accent); }
   .legend div { display: flex; align-items: center; gap: 8px; margin: 4px 0; color: var(--muted); }
   .dot { width: 10px; height: 10px; border-radius: 50%; }
   .toggle { display: flex; align-items: center; gap: 6px; margin: 4px 0; color: var(--muted); }
@@ -45,6 +48,7 @@
   <div id="side">
     <h1>Sylva</h1>
     <div class="sub" id="stats">loading…</div>
+    <button id="flow-back" style="display:none">← Back to graph</button>
     <div class="field">
       <label>Filter by name / file</label>
       <input id="filter" type="text" placeholder="e.g. util or src/foo.py" />
@@ -80,7 +84,7 @@ let W = 0, H = 0, DPR = Math.max(1, window.devicePixelRatio || 1);
 let NODES = [], LINKS = [], BY_ID = new Map(), ADJ = new Map();
 let view = { x: 0, y: 0, k: 1 };          // pan/zoom
 let selected = null, hoverId = null, currentVersion = null, coverageMode = false;
-let moduleView = false;
+let moduleView = false, flowMode = false;
 let RAW = { nodes: [], links: [], modules: [], module_links: [] };
 const kinds = { function: true, class: true, import: true };
 let filterText = "";
@@ -155,6 +159,7 @@ async function load() {
 
 // Poll for changes and live-update the diagram when the graph changes.
 async function poll() {
+  if (flowMode) return;  // don't clobber the flowchart with a live graph update
   try {
     const r = await fetch("version");
     if (!r.ok) return;
@@ -306,8 +311,62 @@ function select(n) {
     `<div class="row">file: ${n.file || ""}:${n.line ?? "?"}</div>` +
     `<div class="row">degree: ${n.degree}</div>` +
     `<div class="row">coverage: ${cov}</div>`;
+  // Flowchart entry: only meaningful for a real symbol (not a module block).
+  if (!moduleView && !flowMode && n.kind !== "module") {
+    const btn = document.createElement("button");
+    btn.textContent = "▸ Flow from here";
+    btn.onclick = () => enterFlow(n.name);
+    info.appendChild(btn);
+  }
   draw();
 }
+
+// --- Feature 4.10: layered call flowchart from an entry point ------------- //
+async function enterFlow(entry) {
+  let data;
+  try { data = await (await fetch("flow?entry=" + encodeURIComponent(entry))).json(); }
+  catch (e) { return; }
+  if (!data.nodes || !data.nodes.length) return;
+
+  flowMode = true;
+  selected = null;
+  // Fixed layered positions: y by layer (top→down), x spread within each layer.
+  const LAYER_GAP = 90, NODE_GAP = 120;
+  const byLayer = {};
+  for (const n of data.nodes) (byLayer[n.layer] = byLayer[n.layer] || []).push(n);
+  NODES = [];
+  for (const layer of Object.keys(byLayer).map(Number).sort((a, b) => a - b)) {
+    const row = byLayer[layer];
+    row.forEach((n, i) => NODES.push({
+      ...n, x: (i - (row.length - 1) / 2) * NODE_GAP, y: layer * LAYER_GAP, vx: 0, vy: 0,
+    }));
+  }
+  LINKS = data.edges;
+  BY_ID = new Map(NODES.map(n => [n.id, n]));
+  ADJ = new Map(NODES.map(n => [n.id, new Set()]));
+  const deg = new Map();
+  for (const l of LINKS) {
+    if (ADJ.has(l.source) && ADJ.has(l.target)) {
+      ADJ.get(l.source).add(l.target); ADJ.get(l.target).add(l.source);
+      deg.set(l.source, (deg.get(l.source) || 0) + 1);
+      deg.set(l.target, (deg.get(l.target) || 0) + 1);
+    }
+  }
+  for (const n of NODES) n.degree = deg.get(n.id) || 1;
+  document.getElementById("stats").textContent = `flow from ${entry} · ${NODES.length} nodes · ${LINKS.length} calls`;
+  document.getElementById("flow-back").style.display = "block";
+  document.getElementById("info").innerHTML = `<div class="row">Layered call flow. Click 'Back to graph' to return.</div>`;
+  center();  // no force sim — positions are fixed
+  draw();
+}
+
+function exitFlow() {
+  flowMode = false;
+  document.getElementById("flow-back").style.display = "none";
+  document.getElementById("info").innerHTML = `<div class="row">Click a node for details.</div>`;
+  render(false);
+}
+document.getElementById("flow-back").addEventListener("click", exitFlow);
 
 document.getElementById("filter").addEventListener("input", e => { filterText = e.target.value.trim().toLowerCase(); draw(); });
 for (const k of ["function", "class", "import"]) {
