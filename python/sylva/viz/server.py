@@ -26,6 +26,7 @@ from .export import (
     export_graph_json,
     flow_layout,
     graph_version,
+    neighborhood,
 )
 
 ASSETS_DIR = os.path.join(os.path.dirname(__file__), "assets")
@@ -53,6 +54,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._serve_exec()
         elif route == "/architecture":
             self._serve_architecture()
+        elif route == "/neighborhood":
+            self._serve_neighborhood()
         else:
             self._send_json(404, {"error": f"not found: {self.path}"})
 
@@ -119,6 +122,24 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._send_json(500, {"error": str(e)})
         except Exception as e:
             self._send_json(500, {"error": f"failed to build architecture: {e}"})
+
+    def _serve_neighborhood(self):
+        q = parse_qs(urlparse(self.path).query)
+        symbol = q.get("symbol", [None])[0]
+        if not symbol:
+            self._send_json(400, {"error": "missing required query parameter: symbol"})
+            return
+        try:
+            depth = int(q.get("depth", ["1"])[0])
+        except ValueError:
+            self._send_json(400, {"error": "depth must be an integer"})
+            return
+        try:
+            self._send_json(200, neighborhood(self._db_path, symbol, depth))
+        except FileNotFoundError as e:
+            self._send_json(500, {"error": str(e)})
+        except Exception as e:
+            self._send_json(500, {"error": f"failed to build neighborhood: {e}"})
 
     def _send_json(self, status, obj):
         body = json.dumps(obj).encode("utf-8")

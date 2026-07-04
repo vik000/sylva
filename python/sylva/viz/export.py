@@ -242,6 +242,81 @@ def exec_path(db_path, test):
     return {"test": test, "nodes": nodes, "edges": edges}
 
 
+def neighborhood(db_path, symbol, depth=1):
+    """Feature 4.9 — the N-hop neighbourhood of `symbol`, for the focus view.
+
+    The induced subgraph of every symbol within `depth` *undirected* hops of the
+    centre over `calls`/`imports` edges — i.e. both callers and callees, unlike
+    the directional flow (4.10) / blast radius (4.2). Each node carries its hop
+    distance `dist` from the centre (0 = the centre itself). BFS with a visited
+    set, so cycles terminate. `depth` is clamped at 0.
+
+    Returns `{center, depth, nodes: [{id, name, kind, file, line, dist}],
+    edges: [{source, target, kind}]}`. An unknown symbol yields empty
+    nodes/edges. Raises FileNotFoundError if the database does not exist.
+    """
+    if not os.path.exists(db_path):
+        raise FileNotFoundError(f"database not found: {db_path}")
+
+    depth = max(0, int(depth))
+    conn = sqlite3.connect(db_path)
+    try:
+        syms = conn.execute(
+            "SELECT s.id, s.name, s.kind, s.line_start, f.path "
+            "FROM symbols s JOIN files f ON f.id = s.file_id"
+        ).fetchall()
+        edges = conn.execute(
+            "SELECT src_id, dst_id, kind FROM edges WHERE kind IN ('calls', 'imports')"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    detail = {sid: (name, kind, line, path) for (sid, name, kind, line, path) in syms}
+    # Undirected adjacency over calls/imports.
+    adj = {}
+    for src, dst, _kind in edges:
+        adj.setdefault(src, set()).add(dst)
+        adj.setdefault(dst, set()).add(src)
+
+    centers = [sid for (sid, name, *_rest) in syms if name == symbol]
+    if not centers:
+        return {"center": symbol, "depth": depth, "nodes": [], "edges": []}
+
+    # BFS out to `depth` hops; `dist` is the shortest hop count from any centre.
+    dist = {c: 0 for c in centers}
+    frontier = list(centers)
+    for d in range(1, depth + 1):
+        nxt = []
+        for u in frontier:
+            for v in adj.get(u, ()):  # only symbols that actually exist as nodes
+                if v not in dist and v in detail:
+                    dist[v] = d
+                    nxt.append(v)
+        frontier = nxt
+        if not frontier:
+            break
+
+    reached = set(dist)
+    nodes = [
+        {
+            "id": sid,
+            "name": detail[sid][0],
+            "kind": detail[sid][1],
+            "file": detail[sid][3],
+            "line": detail[sid][2],
+            "dist": dist[sid],
+        }
+        for sid in dist
+    ]
+    nodes.sort(key=lambda n: (n["dist"], n["name"]))
+    sub_edges = [
+        {"source": s, "target": t, "kind": k}
+        for (s, t, k) in edges
+        if s in reached and t in reached
+    ]
+    return {"center": symbol, "depth": depth, "nodes": nodes, "edges": sub_edges}
+
+
 def architecture(db_path):
     """Feature 4.8 — the architecture summary that drives the sidebar navigator.
 
