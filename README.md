@@ -41,41 +41,58 @@ You need two things installed first:
 
 ---
 
-## Install (one time)
+## Install (one time — compile Sylva)
 
-From the Sylva project folder:
+Sylva is compiled **once**, inside the Sylva project folder. Open a terminal in
+the folder where this README lives and run:
 
 ```bash
-python3 -m venv .venv          # create an isolated environment
-source .venv/bin/activate      # turn it on (do this in each new terminal)
-pip install maturin            # the build tool
-maturin develop --release      # build & install Sylva into the environment
+python3 -m venv .venv          # 1. create an isolated Python environment
+source .venv/bin/activate      # 2. turn it on
+pip install maturin            # 3. get the build tool
+maturin develop --release      # 4. compile Sylva & install the `sylva` command
 ```
 
-That's it — you now have a `sylva` command available while the environment is
-active. (In a new terminal, just re-run `source .venv/bin/activate`.)
+After this you have a `sylva` command. You never recompile — you just run
+`sylva`. The one thing to remember: the `sylva` command only works while the
+environment is **active**, so in any new terminal run `source .venv/bin/activate`
+first (from the Sylva folder).
 
 ---
 
 ## Try it on a repo (2 steps)
 
-### 1. Analyze your code
+Once activated, you can run `sylva` from anywhere. Sylva stores its data in a
+`.codemcp/` folder **in the directory you run it from** (like `.git`), so the
+simplest, most predictable way is to **go into the repo you want to analyse
+first**:
+
+### 1. Analyze the code
 
 ```bash
-sylva analyze --root /path/to/your/repo
+cd /path/to/the/repo/you/want/to/analyse
+sylva analyze --root .
 ```
 
-This scans the repo and builds the graph. You'll see something like:
+`--root .` means "analyse this folder." Sylva scans it and builds the graph.
+You'll see something like:
 
 ```
 sylva: analyzed 83 file(s), 2270 symbols, 1320 relationships -> .codemcp/sylva.db
 sylva: now run  sylva serve-ui --db .codemcp/sylva.db
 ```
 
-The graph is saved to `.codemcp/sylva.db`. (Sylva respects your `.gitignore`, so
-it skips virtualenvs, build folders, etc.)
+The graph is saved to `.codemcp/sylva.db` **inside that repo**. (Sylva respects
+the repo's `.gitignore`, so it skips virtualenvs, build folders, etc.)
+
+> **Where do files go?** `sylva` writes `.codemcp/` (the graph) and, later,
+> `visualisation/` relative to your **current directory**. Running from inside
+> the repo keeps everything with that repo. You may want to add `.codemcp/` and
+> `visualisation/` to that repo's `.gitignore`.
 
 ### 2. See the map
+
+Still in the same folder:
 
 ```bash
 sylva serve-ui
