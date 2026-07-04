@@ -102,7 +102,10 @@ class TestBuildGraph:
 
     def test_empty_graph(self, tmp_path):
         db = _init(tmp_path)
-        assert build_graph(str(db)) == {"nodes": [], "links": []}
+        # modules/module_links added by Feature 4.6.
+        assert build_graph(str(db)) == {
+            "nodes": [], "links": [], "modules": [], "module_links": [],
+        }
 
     def test_missing_db_raises(self, tmp_path):
         with pytest.raises(FileNotFoundError):
@@ -145,7 +148,9 @@ class TestServer:
         with _Server(str(db)) as s:
             status, body, _ = _get(s.port, "/graph.json")
             assert status == 200
-            assert json.loads(body) == {"nodes": [], "links": []}
+            assert json.loads(body) == {
+                "nodes": [], "links": [], "modules": [], "module_links": [],
+            }
 
     def test_unknown_path_404(self, tmp_path):
         db = _init(tmp_path)

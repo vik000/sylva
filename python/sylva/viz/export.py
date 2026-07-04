@@ -77,7 +77,34 @@ def build_graph(db_path):
     ]
     links = [{"source": src, "target": dst, "kind": kind} for (src, dst, kind) in edges]
 
-    return {"nodes": nodes, "links": links}
+    # Feature 4.6 — module (file) clustering: a higher-level view. Each file is a
+    # module; edges between modules aggregate the cross-module symbol edges.
+    module_of = {n["id"]: n["file"] for n in nodes}
+    symbols_per_module = {}
+    for n in nodes:
+        symbols_per_module[n["file"]] = symbols_per_module.get(n["file"], 0) + 1
+    modules = [
+        {"id": path, "symbols": count}
+        for path, count in sorted(symbols_per_module.items())
+    ]
+
+    module_edges = {}
+    for src, dst, _kind in edges:
+        sm, tm = module_of.get(src), module_of.get(dst)
+        if sm is None or tm is None or sm == tm:
+            continue  # intra-module (or dangling) — collapses away at module level
+        module_edges[(sm, tm)] = module_edges.get((sm, tm), 0) + 1
+    module_links = [
+        {"source": sm, "target": tm, "weight": w}
+        for (sm, tm), w in sorted(module_edges.items())
+    ]
+
+    return {
+        "nodes": nodes,
+        "links": links,
+        "modules": modules,
+        "module_links": module_links,
+    }
 
 
 def graph_version(db_path):

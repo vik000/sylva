@@ -50,6 +50,10 @@
       <input id="filter" type="text" placeholder="e.g. util or src/foo.py" />
     </div>
     <div class="field">
+      <label>View</label>
+      <div class="toggle"><input type="checkbox" id="module-view"><span class="dot" style="background:#a371f7"></span>module view (collapse to files)</div>
+    </div>
+    <div class="field">
       <label>Show</label>
       <div class="toggle"><input type="checkbox" id="k-function" checked><span class="dot" style="background:#6ea8fe"></span>functions</div>
       <div class="toggle"><input type="checkbox" id="k-class" checked><span class="dot" style="background:#f2a65a"></span>classes</div>
@@ -66,7 +70,7 @@
 </div>
 <script>
 "use strict";
-const KIND_COLOR = { function: "#6ea8fe", class: "#f2a65a", import: "#7ee787", error: "#f85149" };
+const KIND_COLOR = { function: "#6ea8fe", class: "#f2a65a", import: "#7ee787", error: "#f85149", module: "#a371f7" };
 // Coverage overlay palette (red -> amber -> green; grey = no data).
 const COV_COLOR = { uncovered: "#f85149", low: "#f0883e", partial: "#d4a72c", high: "#7ee787", covered: "#3fb950", none: "#484f58" };
 const canvas = document.getElementById("c");
@@ -76,8 +80,16 @@ let W = 0, H = 0, DPR = Math.max(1, window.devicePixelRatio || 1);
 let NODES = [], LINKS = [], BY_ID = new Map(), ADJ = new Map();
 let view = { x: 0, y: 0, k: 1 };          // pan/zoom
 let selected = null, hoverId = null, currentVersion = null, coverageMode = false;
+let moduleView = false;
+let RAW = { nodes: [], links: [], modules: [], module_links: [] };
 const kinds = { function: true, class: true, import: true };
 let filterText = "";
+
+// A file path -> its short module label (basename).
+function moduleLabel(path) {
+  const parts = String(path).split(/[\\/]/).filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : String(path);
+}
 
 function resize() {
   W = canvas.clientWidth; H = canvas.clientHeight;
@@ -91,12 +103,33 @@ window.addEventListener("resize", resize);
 // nodes keep their positions so the layout doesn't jump — only new nodes are
 // seeded randomly and the sim re-settles briefly.
 function applyGraph(g, preserve) {
+  RAW = { nodes: g.nodes || [], links: g.links || [], modules: g.modules || [], module_links: g.module_links || [] };
+  render(preserve);
+}
+
+// Build the render set (NODES/LINKS) from RAW, honouring moduleView. In module
+// view each file collapses to one node and cross-module edges are aggregated;
+// otherwise the function-level graph is shown.
+function render(preserve) {
   const old = preserve ? new Map(NODES.map(n => [n.id, { x: n.x, y: n.y }])) : null;
-  NODES = g.nodes.map(n => {
+
+  let src, links;
+  if (moduleView) {
+    src = RAW.modules.map(m => ({
+      id: m.id, name: moduleLabel(m.id), kind: "module", file: m.id,
+      line: null, coverage: null, coverage_state: "none", degree: m.symbols, symbols: m.symbols,
+    }));
+    links = RAW.module_links.map(l => ({ source: l.source, target: l.target, kind: "module", weight: l.weight }));
+  } else {
+    src = RAW.nodes;
+    links = RAW.links;
+  }
+
+  NODES = src.map(n => {
     const p = old && old.get(n.id);
     return { ...n, x: p ? p.x : (Math.random() - .5) * 600, y: p ? p.y : (Math.random() - .5) * 600, vx: 0, vy: 0 };
   });
-  LINKS = g.links;
+  LINKS = links;
   BY_ID = new Map(NODES.map(n => [n.id, n]));
   ADJ = new Map(NODES.map(n => [n.id, new Set()]));
   for (const l of LINKS) {
@@ -106,7 +139,8 @@ function applyGraph(g, preserve) {
     }
   }
   if (selected) selected = BY_ID.get(selected.id) || null;
-  document.getElementById("stats").textContent = `${NODES.length} symbols · ${LINKS.length} edges`;
+  const unit = moduleView ? "modules" : "symbols";
+  document.getElementById("stats").textContent = `${NODES.length} ${unit} · ${LINKS.length} edges`;
   document.getElementById("empty").classList.toggle("show", NODES.length === 0);
   updateCovNote();
   if (NODES.length) { settle(preserve ? 60 : 150); if (!preserve) center(); }
@@ -183,7 +217,9 @@ function center() {
 
 function radius(n) { return 3 + Math.sqrt(n.degree || 0) * 1.8; }
 function visible(n) {
-  if (!kinds[n.kind]) return false;
+  // The kind filter (functions/classes/imports) only applies to the
+  // function-level view; module nodes are always kind-visible.
+  if (!moduleView && !kinds[n.kind]) return false;
   if (filterText) {
     const hay = (n.name + " " + (n.file || "")).toLowerCase();
     if (!hay.includes(filterText)) return false;
@@ -279,6 +315,9 @@ for (const k of ["function", "class", "import"]) {
 }
 document.getElementById("cov-mode").addEventListener("change", e => {
   coverageMode = e.target.checked; updateCovNote(); draw();
+});
+document.getElementById("module-view").addEventListener("change", e => {
+  moduleView = e.target.checked; selected = null; render(false);  // re-layout for the new view
 });
 
 // Show an informative note when coverage mode is on but no node has data.
