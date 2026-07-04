@@ -107,6 +107,25 @@ def build_graph(db_path):
     }
 
 
+def _bfs_layers(roots, adj):
+    """Assign each node a layer = BFS depth from the nearest root. Cycles
+    terminate via the visited (`layer`) set. Shared by the flowchart (4.10) and
+    execution-path (4.11) views."""
+    layer = {r: 0 for r in roots}
+    frontier = list(roots)
+    depth = 1
+    while frontier:
+        nxt = []
+        for u in frontier:
+            for v in adj.get(u, []):
+                if v not in layer:
+                    layer[v] = depth
+                    nxt.append(v)
+        frontier = nxt
+        depth += 1
+    return layer
+
+
 def flow_layout(db_path, entry):
     """Feature 4.10 — the reachable outbound call subgraph from `entry`, as a
     layered flowchart: each node gets a `layer` (BFS depth from the entry), plus
@@ -141,20 +160,7 @@ def flow_layout(db_path, entry):
     if not roots:
         return {"entry": entry, "nodes": [], "edges": []}
 
-    # BFS layering: layer = shortest hop count from an entry root.
-    layer = {r: 0 for r in roots}
-    frontier = list(roots)
-    depth = 1
-    while frontier:
-        nxt = []
-        for u in frontier:
-            for v in adj.get(u, []):
-                if v not in layer:
-                    layer[v] = depth
-                    nxt.append(v)
-        frontier = nxt
-        depth += 1
-
+    layer = _bfs_layers(roots, adj)  # layer = shortest hop count from an entry root
     reached = set(layer)
     nodes = [
         {
@@ -172,6 +178,68 @@ def flow_layout(db_path, entry):
         {"source": s, "target": t} for (s, t) in edges if s in reached and t in reached
     ]
     return {"entry": entry, "nodes": nodes, "edges": flow_edges}
+
+
+def exec_path(db_path, test):
+    """Feature 4.11 — the part of the call graph a test actually exercised, as a
+    layered flowchart. The exercised symbols are the targets of the test's
+    `test_covers` edges (Feature 3.3); the induced subgraph of those + the
+    `calls` edges among them is layered like `flow_layout`.
+
+    Returns `{test, nodes: [{id, name, kind, file, line, layer}], edges}`. An
+    unknown/uncovered test yields empty nodes/edges. Raises FileNotFoundError if
+    the database does not exist.
+    """
+    if not os.path.exists(db_path):
+        raise FileNotFoundError(f"database not found: {db_path}")
+
+    conn = sqlite3.connect(db_path)
+    try:
+        syms = conn.execute(
+            "SELECT s.id, s.name, s.kind, s.line_start, f.path "
+            "FROM symbols s JOIN files f ON f.id = s.file_id"
+        ).fetchall()
+        covered_rows = conn.execute(
+            "SELECT DISTINCT e.dst_id FROM edges e JOIN symbols s ON s.id = e.src_id "
+            "WHERE e.kind = 'test_covers' AND s.name = ?",
+            (test,),
+        ).fetchall()
+        call_rows = conn.execute("SELECT src_id, dst_id FROM edges WHERE kind = 'calls'").fetchall()
+    finally:
+        conn.close()
+
+    detail = {sid: (name, kind, line, path) for (sid, name, kind, line, path) in syms}
+    covered = {r[0] for r in covered_rows}
+    if not covered:
+        return {"test": test, "nodes": [], "edges": []}
+
+    # Call edges restricted to the exercised (covered) set.
+    adj, inbound, induced = {}, set(), []
+    for src, dst in call_rows:
+        if src in covered and dst in covered:
+            adj.setdefault(src, []).append(dst)
+            inbound.add(dst)
+            induced.append((src, dst))
+
+    roots = [c for c in covered if c not in inbound] or list(covered)  # cycle -> all roots
+    layer = _bfs_layers(roots, adj)
+    for c in covered:
+        layer.setdefault(c, 0)  # any cycle remnant not reached -> layer 0
+
+    nodes = [
+        {
+            "id": sid,
+            "name": detail[sid][0],
+            "kind": detail[sid][1],
+            "file": detail[sid][3],
+            "line": detail[sid][2],
+            "layer": layer[sid],
+        }
+        for sid in covered
+    ]
+    nodes.sort(key=lambda n: (n["layer"], n["name"]))
+    edges = [{"source": s, "target": d} for (s, d) in induced]
+    return {"test": test, "nodes": nodes, "edges": edges}
 
 
 def graph_version(db_path):

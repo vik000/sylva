@@ -19,7 +19,7 @@ import webbrowser
 from functools import partial
 from urllib.parse import parse_qs, urlparse
 
-from .export import build_graph, export_graph_json, flow_layout, graph_version
+from .export import build_graph, exec_path, export_graph_json, flow_layout, graph_version
 
 ASSETS_DIR = os.path.join(os.path.dirname(__file__), "assets")
 
@@ -42,6 +42,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._serve_version()
         elif route == "/flow":
             self._serve_flow()
+        elif route == "/exec":
+            self._serve_exec()
         else:
             self._send_json(404, {"error": f"not found: {self.path}"})
 
@@ -88,6 +90,18 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._send_json(500, {"error": str(e)})
         except Exception as e:
             self._send_json(500, {"error": f"failed to build flow: {e}"})
+
+    def _serve_exec(self):
+        test = parse_qs(urlparse(self.path).query).get("test", [None])[0]
+        if not test:
+            self._send_json(400, {"error": "missing required query parameter: test"})
+            return
+        try:
+            self._send_json(200, exec_path(self._db_path, test))
+        except FileNotFoundError as e:
+            self._send_json(500, {"error": str(e)})
+        except Exception as e:
+            self._send_json(500, {"error": f"failed to build exec path: {e}"})
 
     def _send_json(self, status, obj):
         body = json.dumps(obj).encode("utf-8")

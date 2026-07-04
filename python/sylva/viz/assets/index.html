@@ -317,23 +317,26 @@ function select(n) {
     btn.textContent = "▸ Flow from here";
     btn.onclick = () => enterFlow(n.name);
     info.appendChild(btn);
+    // For test functions: the real execution path they exercised (4.11).
+    if (n.name.startsWith("test")) {
+      const eb = document.createElement("button");
+      eb.textContent = "▸ Execution path";
+      eb.onclick = () => enterExec(n.name);
+      info.appendChild(eb);
+    }
   }
   draw();
 }
 
-// --- Feature 4.10: layered call flowchart from an entry point ------------- //
-async function enterFlow(entry) {
-  let data;
-  try { data = await (await fetch("flow?entry=" + encodeURIComponent(entry))).json(); }
-  catch (e) { return; }
-  if (!data.nodes || !data.nodes.length) return;
-
+// --- Features 4.10 / 4.11: layered views (call flow / execution path) ----- //
+// Lay nodes out by layer (top→down), spread within each layer. Fixed positions,
+// no force sim.
+function renderLayered(nodes, edges, statsLabel) {
   flowMode = true;
   selected = null;
-  // Fixed layered positions: y by layer (top→down), x spread within each layer.
   const LAYER_GAP = 90, NODE_GAP = 120;
   const byLayer = {};
-  for (const n of data.nodes) (byLayer[n.layer] = byLayer[n.layer] || []).push(n);
+  for (const n of nodes) (byLayer[n.layer] = byLayer[n.layer] || []).push(n);
   NODES = [];
   for (const layer of Object.keys(byLayer).map(Number).sort((a, b) => a - b)) {
     const row = byLayer[layer];
@@ -341,7 +344,7 @@ async function enterFlow(entry) {
       ...n, x: (i - (row.length - 1) / 2) * NODE_GAP, y: layer * LAYER_GAP, vx: 0, vy: 0,
     }));
   }
-  LINKS = data.edges;
+  LINKS = edges;
   BY_ID = new Map(NODES.map(n => [n.id, n]));
   ADJ = new Map(NODES.map(n => [n.id, new Set()]));
   const deg = new Map();
@@ -353,11 +356,27 @@ async function enterFlow(entry) {
     }
   }
   for (const n of NODES) n.degree = deg.get(n.id) || 1;
-  document.getElementById("stats").textContent = `flow from ${entry} · ${NODES.length} nodes · ${LINKS.length} calls`;
+  document.getElementById("stats").textContent = statsLabel;
   document.getElementById("flow-back").style.display = "block";
-  document.getElementById("info").innerHTML = `<div class="row">Layered call flow. Click 'Back to graph' to return.</div>`;
+  document.getElementById("info").innerHTML = `<div class="row">Layered view. Click 'Back to graph' to return.</div>`;
   center();  // no force sim — positions are fixed
   draw();
+}
+
+async function enterFlow(entry) {
+  let data;
+  try { data = await (await fetch("flow?entry=" + encodeURIComponent(entry))).json(); }
+  catch (e) { return; }
+  if (!data.nodes || !data.nodes.length) return;
+  renderLayered(data.nodes, data.edges, `flow from ${entry} · ${data.nodes.length} nodes · ${data.edges.length} calls`);
+}
+
+async function enterExec(test) {
+  let data;
+  try { data = await (await fetch("exec?test=" + encodeURIComponent(test))).json(); }
+  catch (e) { return; }
+  if (!data.nodes || !data.nodes.length) return;
+  renderLayered(data.nodes, data.edges, `exec path · ${test} · ${data.nodes.length} symbols`);
 }
 
 function exitFlow() {
