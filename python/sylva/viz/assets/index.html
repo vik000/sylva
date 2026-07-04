@@ -55,6 +55,11 @@
       <div class="toggle"><input type="checkbox" id="k-class" checked><span class="dot" style="background:#f2a65a"></span>classes</div>
       <div class="toggle"><input type="checkbox" id="k-import" checked><span class="dot" style="background:#7ee787"></span>imports</div>
     </div>
+    <div class="field">
+      <label>Overlay</label>
+      <div class="toggle"><input type="checkbox" id="cov-mode"> coverage mode (red→green)</div>
+      <div id="covnote" class="hint" style="display:none">No coverage data yet — run coverage analysis, then reload.</div>
+    </div>
     <div id="info"><div class="row">Click a node for details.</div></div>
     <div class="hint">Scroll to zoom · drag background to pan · drag a node to move it · click to highlight neighbours.</div>
   </div>
@@ -62,13 +67,15 @@
 <script>
 "use strict";
 const KIND_COLOR = { function: "#6ea8fe", class: "#f2a65a", import: "#7ee787", error: "#f85149" };
+// Coverage overlay palette (red -> amber -> green; grey = no data).
+const COV_COLOR = { uncovered: "#f85149", low: "#f0883e", partial: "#d4a72c", high: "#7ee787", covered: "#3fb950", none: "#484f58" };
 const canvas = document.getElementById("c");
 const ctx = canvas.getContext("2d");
 let W = 0, H = 0, DPR = Math.max(1, window.devicePixelRatio || 1);
 
 let NODES = [], LINKS = [], BY_ID = new Map(), ADJ = new Map();
 let view = { x: 0, y: 0, k: 1 };          // pan/zoom
-let selected = null, hoverId = null, currentVersion = null;
+let selected = null, hoverId = null, currentVersion = null, coverageMode = false;
 const kinds = { function: true, class: true, import: true };
 let filterText = "";
 
@@ -101,6 +108,7 @@ function applyGraph(g, preserve) {
   if (selected) selected = BY_ID.get(selected.id) || null;
   document.getElementById("stats").textContent = `${NODES.length} symbols · ${LINKS.length} edges`;
   document.getElementById("empty").classList.toggle("show", NODES.length === 0);
+  updateCovNote();
   if (NODES.length) { settle(preserve ? 60 : 150); if (!preserve) center(); }
   draw();
 }
@@ -201,7 +209,9 @@ function draw() {
     if (!visible(n)) continue;
     const dim = selected && n.id !== selected.id && !(neigh && neigh.has(n.id));
     ctx.globalAlpha = dim ? 0.25 : 1;
-    ctx.fillStyle = KIND_COLOR[n.kind] || "#9aa4b8";
+    ctx.fillStyle = coverageMode
+      ? (COV_COLOR[n.coverage_state] || COV_COLOR.none)
+      : (KIND_COLOR[n.kind] || "#9aa4b8");
     ctx.beginPath(); ctx.arc(n.x, n.y, radius(n), 0, Math.PI * 2); ctx.fill();
     if (n.id === (selected && selected.id) || n.id === hoverId) {
       ctx.strokeStyle = "#fff"; ctx.lineWidth = 2 / view.k; ctx.stroke();
@@ -266,6 +276,15 @@ function select(n) {
 document.getElementById("filter").addEventListener("input", e => { filterText = e.target.value.trim().toLowerCase(); draw(); });
 for (const k of ["function", "class", "import"]) {
   document.getElementById("k-" + k).addEventListener("change", e => { kinds[k] = e.target.checked; draw(); });
+}
+document.getElementById("cov-mode").addEventListener("change", e => {
+  coverageMode = e.target.checked; updateCovNote(); draw();
+});
+
+// Show an informative note when coverage mode is on but no node has data.
+function updateCovNote() {
+  const has = NODES.some(n => n.coverage_state && n.coverage_state !== "none");
+  document.getElementById("covnote").style.display = (coverageMode && !has) ? "block" : "none";
 }
 
 resize();

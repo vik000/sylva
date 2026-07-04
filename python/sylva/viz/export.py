@@ -17,6 +17,26 @@ import os
 import sqlite3
 
 
+def coverage_state(coverage):
+    """Map a coverage percentage to a discrete overlay band.
+
+    Drives the UI's red->amber->green->grey colouring at the data layer so the
+    overlay is testable without rendering. `None` (no data) -> 'none' (grey);
+    0 -> 'uncovered' (red); 100 -> 'covered' (green); in between is banded.
+    """
+    if coverage is None:
+        return "none"
+    if coverage <= 0:
+        return "uncovered"
+    if coverage >= 100:
+        return "covered"
+    if coverage < 50:
+        return "low"
+    if coverage < 80:
+        return "partial"
+    return "high"
+
+
 def build_graph(db_path):
     """Build the `{nodes, links}` graph dict from the database.
 
@@ -49,7 +69,8 @@ def build_graph(db_path):
             "kind": kind,
             "file": path,
             "line": line,
-            "coverage": coverage,  # may be None; used by the 4.5 overlay later
+            "coverage": coverage,  # may be None
+            "coverage_state": coverage_state(coverage),  # 4.5 overlay band
             "degree": degree.get(sid, 0),
         }
         for (sid, name, kind, line, coverage, path) in symbols
