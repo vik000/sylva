@@ -13,6 +13,39 @@ import sys
 
 import sylva
 
+DEFAULT_DB = ".codemcp/sylva.db"
+
+
+def _analyze(root, db_path):
+    """Analyze a codebase into the graph database. Returns a process exit code."""
+    if not os.path.isdir(root):
+        print(f"sylva: not a directory: {root}", file=sys.stderr)
+        return 1
+
+    os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
+    sylva.init_db(db_path)
+
+    files = sylva.walk_python_files(root)
+    total_symbols = 0
+    skipped = 0
+    for path in files:
+        try:
+            total_symbols += sylva.write_symbols(db_path, path, sylva.extract_symbols(path))
+        except Exception as e:  # unreadable / undecodable file — skip, don't abort
+            skipped += 1
+            if os.environ.get("SYLVA_LOG"):
+                print(f"sylva: skipping '{path}': {e}", file=sys.stderr)
+
+    edges = sylva.build_edges(db_path)
+
+    note = f" ({skipped} skipped)" if skipped else ""
+    print(
+        f"sylva: analyzed {len(files)} file(s){note}, "
+        f"{total_symbols} symbols, {edges} relationships -> {db_path}"
+    )
+    print(f"sylva: now run  sylva serve-ui --db {db_path}")
+    return 0
+
 
 def _serve(db_path):
     """Run the stdio JSON-RPC loop. Returns a process exit code."""
@@ -36,19 +69,26 @@ def main(argv=None):
     parser = argparse.ArgumentParser(prog="sylva", description="Codebase knowledge graph")
     sub = parser.add_subparsers(dest="command", required=True)
 
+    analyze = sub.add_parser("analyze", help="Analyze a codebase into the graph database")
+    analyze.add_argument("--root", required=True, help="Directory (codebase) to analyze")
+    analyze.add_argument("--db", default=DEFAULT_DB, help=f"Graph database path (default {DEFAULT_DB})")
+
     serve = sub.add_parser("serve", help="Start the MCP server over stdio")
-    serve.add_argument("--db", required=True, help="Path to the sylva.db graph database")
+    serve.add_argument("--db", default=DEFAULT_DB, help=f"Graph database path (default {DEFAULT_DB})")
 
     ui = sub.add_parser("serve-ui", help="Serve the interactive visualisation UI")
-    ui.add_argument("--db", required=True, help="Path to the sylva.db graph database")
+    ui.add_argument("--db", default=DEFAULT_DB, help=f"Graph database path (default {DEFAULT_DB})")
     ui.add_argument("--port", type=int, default=7700, help="Port to serve on (default 7700)")
     ui.add_argument("--no-open", action="store_true", help="Do not open the browser")
 
     ex = sub.add_parser("export-viz", help="Write visualisation/graph.json from the graph")
-    ex.add_argument("--db", required=True, help="Path to the sylva.db graph database")
+    ex.add_argument("--db", default=DEFAULT_DB, help=f"Graph database path (default {DEFAULT_DB})")
     ex.add_argument("--out", default="visualisation", help="Output directory (default visualisation)")
 
     args = parser.parse_args(argv)
+
+    if args.command == "analyze":
+        return _analyze(args.root, args.db)
 
     if args.command == "serve":
         return _serve(args.db)
