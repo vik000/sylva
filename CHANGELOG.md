@@ -8,6 +8,9 @@ grouped by the epics that shaped each line.
 The 3.0 line makes Sylva a tool that *explains* a codebase, not just maps it —
 all deterministically (no LLM in the core).
 
+- **3.13.0** — **Epic 10 complete.** Verified logic paths (Feature 10.2):
+  `suggest_test_targets` recommender + `sylva-generate-tests` skill + a "Logic
+  paths (from tests)" viz surface — real execution paths as block diagrams.
 - **3.12.0** — `sylva onboard`: one command → graph + brief + diagrams + MCP
   config (Feature 10.4).
 - **3.11.0** — Mermaid workflow diagrams (`sylva diagram`, Feature 10.3).
