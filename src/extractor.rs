@@ -1,18 +1,25 @@
-//! Python AST extractor.
+//! AST symbol extraction, dispatched by language (Feature 5.1).
 //!
-//! Parses a `.py` file with tree-sitter and extracts its symbols — functions,
-//! classes, and imports — each as a dict `{name, kind, line, line_end, docstring}`.
+//! Each language is an [`Extractor`] — a small module that turns source into a
+//! common `Vec<Symbol>`. `extract_symbols(path)` picks the extractor by file
+//! extension and emits the shared dict shape `{name, kind, line, line_end,
+//! docstring, import_module, import_name}`; `list_languages()` reports what's
+//! registered. Adding a language is implementing one `Extractor` (Feature 5.2 /
+//! 5.3). Python is the first (and, for now, only full) extractor.
 //!
 //! Robustness (per project rules): a missing file is rejected with
-//! `FileNotFoundError`; a non-UTF-8 (binary) file is rejected with a clear
-//! `ValueError`. A file that *parses with errors* is not fatal: whatever
-//! symbols tree-sitter recovers are returned, followed by a single sentinel
-//! entry `{"kind": "error", ...}` flagging that the parse was incomplete. This
-//! is the "partial results with an error flag" contract from the spec.
+//! `FileNotFoundError`; an **unsupported extension** returns `[]` (not an error);
+//! a non-UTF-8 (binary) file of a supported language is rejected with a clear
+//! `ValueError`. A file that *parses with errors* is not fatal: recovered
+//! symbols are returned, followed by a single `{"kind": "error", ...}` sentinel.
+//! An extractor **panic is caught** and reported as that sentinel — never a crash.
 
-use pyo3::exceptions::{PyFileNotFoundError, PyOSError, PyRuntimeError, PyValueError};
+use pyo3::exceptions::{PyFileNotFoundError, PyOSError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
+use std::collections::HashSet;
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::path::Path;
 use tree_sitter::{Node, Parser};
 
 /// One extracted symbol. `kind` is a fixed vocabulary so downstream code
@@ -177,13 +184,85 @@ fn collect(node: Node, src: &[u8], out: &mut Vec<Symbol>, err_line: &mut Option<
     }
 }
 
-/// Parse `path` and return a list of symbol dicts, each with keys
-/// `name`, `kind` (`function` | `class` | `import`), `line` (1-based start),
-/// `line_end` (1-based end), and `docstring` (str or None). If the parse is
-/// incomplete, a trailing `{"kind": "error", ...}` dict is appended after the
-/// partial results.
+/// The result of extracting one file: the recovered symbols plus the earliest
+/// line at which the parse was incomplete (→ a trailing error sentinel).
+pub(crate) struct ExtractResult {
+    symbols: Vec<Symbol>,
+    error_line: Option<usize>,
+}
+
+/// A language extractor: recognised extensions + source → symbols. Adding a
+/// language is implementing this trait and registering it (see `registry`).
+pub(crate) trait Extractor {
+    /// The language name reported by `list_languages`.
+    fn language(&self) -> &'static str;
+    /// File extensions (without the dot) this extractor handles.
+    fn extensions(&self) -> &'static [&'static str];
+    /// Parse `source` into symbols. Must not raise — parse failures are
+    /// reported via `error_line`, and any panic is caught by the caller.
+    fn extract(&self, source: &str) -> ExtractResult;
+}
+
+/// The Python extractor (tree-sitter-python).
+struct PythonExtractor;
+
+impl Extractor for PythonExtractor {
+    fn language(&self) -> &'static str {
+        "python"
+    }
+    fn extensions(&self) -> &'static [&'static str] {
+        &["py", "pyi"]
+    }
+    fn extract(&self, source: &str) -> ExtractResult {
+        let src = source.as_bytes();
+        let mut parser = Parser::new();
+        if parser.set_language(&tree_sitter_python::LANGUAGE.into()).is_err() {
+            return ExtractResult { symbols: Vec::new(), error_line: Some(1) };
+        }
+        let tree = match parser.parse(src, None) {
+            Some(t) => t,
+            None => return ExtractResult { symbols: Vec::new(), error_line: Some(1) },
+        };
+        let mut symbols = Vec::new();
+        let mut err_line = None;
+        collect(tree.root_node(), src, &mut symbols, &mut err_line);
+        ExtractResult { symbols, error_line: err_line }
+    }
+}
+
+/// The registered extractors. A fixed table — registration is inherently
+/// idempotent (a language appears once).
+fn registry() -> Vec<Box<dyn Extractor>> {
+    vec![Box::new(PythonExtractor)]
+}
+
+/// The extractor handling `ext` (extension without the dot), if any.
+fn extractor_for_ext(ext: &str) -> Option<Box<dyn Extractor>> {
+    registry().into_iter().find(|e| e.extensions().contains(&ext))
+}
+
+/// The languages Sylva can fully extract, e.g. `["python"]`.
+#[pyfunction]
+pub fn list_languages(py: Python<'_>) -> PyResult<Py<PyList>> {
+    let list = PyList::empty(py);
+    let mut seen = HashSet::new();
+    for e in registry() {
+        if seen.insert(e.language()) {
+            // dedup: registering a language twice is idempotent
+            list.append(e.language())?;
+        }
+    }
+    Ok(list.unbind())
+}
+
+/// Parse `path` and return a list of symbol dicts, each with keys `name`, `kind`
+/// (`function` | `class` | `import`), `line` (1-based start), `line_end`
+/// (1-based end), `docstring`, `import_module`, and `import_name`. An
+/// unsupported extension returns `[]`; an incomplete parse (or a caught
+/// extractor panic) appends a trailing `{"kind": "error", ...}` sentinel.
 #[pyfunction]
 pub fn extract_symbols(py: Python<'_>, path: &str) -> PyResult<Py<PyList>> {
+    // A missing file is a real error regardless of language.
     let bytes = std::fs::read(path).map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             PyFileNotFoundError::new_err(format!("file not found: '{}'", path))
@@ -192,25 +271,23 @@ pub fn extract_symbols(py: Python<'_>, path: &str) -> PyResult<Py<PyList>> {
         }
     })?;
 
+    // Dispatch by extension; an unsupported language yields no symbols.
+    let ext = Path::new(path).extension().and_then(|e| e.to_str()).unwrap_or("");
+    let extractor = match extractor_for_ext(ext) {
+        Some(e) => e,
+        None => return Ok(PyList::empty(py).unbind()),
+    };
+
     let source = String::from_utf8(bytes).map_err(|_| {
-        PyValueError::new_err(format!(
-            "file is not valid UTF-8 (binary file?): '{}'",
-            path
-        ))
+        PyValueError::new_err(format!("file is not valid UTF-8 (binary file?): '{}'", path))
     })?;
-    let src = source.as_bytes();
 
-    let mut parser = Parser::new();
-    parser
-        .set_language(&tree_sitter_python::LANGUAGE.into())
-        .map_err(|e| PyRuntimeError::new_err(format!("failed to load Python grammar: {}", e)))?;
-    let tree = parser
-        .parse(src, None)
-        .ok_or_else(|| PyRuntimeError::new_err(format!("failed to parse '{}'", path)))?;
-
-    let mut symbols: Vec<Symbol> = Vec::new();
-    let mut err_line: Option<usize> = None;
-    collect(tree.root_node(), src, &mut symbols, &mut err_line);
+    // An extractor bug must never crash the process — catch panics and report
+    // them as an error sentinel (defensive for third-party language modules).
+    let (symbols, err_line) = match catch_unwind(AssertUnwindSafe(|| extractor.extract(&source))) {
+        Ok(r) => (r.symbols, r.error_line),
+        Err(_) => (Vec::new(), Some(1usize)),
+    };
 
     let list = PyList::empty(py);
     for s in symbols {
@@ -224,7 +301,6 @@ pub fn extract_symbols(py: Python<'_>, path: &str) -> PyResult<Py<PyList>> {
         d.set_item("import_name", s.import_name)?;
         list.append(d)?;
     }
-
     if let Some(line) = err_line {
         let d = PyDict::new(py);
         d.set_item("name", "parse_error")?;
@@ -234,6 +310,5 @@ pub fn extract_symbols(py: Python<'_>, path: &str) -> PyResult<Py<PyList>> {
         d.set_item("docstring", Option::<String>::None)?;
         list.append(d)?;
     }
-
     Ok(list.unbind())
 }
