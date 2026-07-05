@@ -118,6 +118,14 @@ def main(argv=None):
     ob.add_argument("--root", required=True, help="Directory (codebase) to onboard")
     ob.add_argument("--db", default=DEFAULT_DB, help=f"Graph database path (default {DEFAULT_DB})")
 
+    ex2 = sub.add_parser(
+        "expose", help="Generate an MCP server exposing allowlisted repo functions"
+    )
+    ex2.add_argument("--root", required=True, help="Project root")
+    ex2.add_argument("--db", default=DEFAULT_DB, help=f"Graph database path (default {DEFAULT_DB})")
+    ex2.add_argument("--config", help="Allowlist file (default <root>/.codemcp/expose.toml)")
+    ex2.add_argument("--out", help="Output server file (default <root>/.codemcp/functions_server.py)")
+
     args = parser.parse_args(argv)
 
     # Bare `sylva` (no command): show the quickstart + available commands, then
@@ -187,6 +195,36 @@ def main(argv=None):
         with open(args.out, "w") as f:
             f.write(md)
         print(f"sylva: wrote diagrams -> {args.out}")
+        return 0
+
+    if args.command == "expose":
+        from .expose import generate_server, parse_allowlist
+
+        if not os.path.isdir(args.root):
+            print(f"sylva: not a directory: {args.root}", file=sys.stderr)
+            return 1
+        config = args.config or os.path.join(args.root, ".codemcp", "expose.toml")
+        allowlist = {"functions": [], "modules": []}
+        if os.path.isfile(config):
+            with open(config) as f:
+                allowlist = parse_allowlist(f.read())
+        else:
+            print(f"sylva: no allowlist at {config} — generating an empty server. "
+                  "List functions/modules there to expose them.", file=sys.stderr)
+        db = args.db if args.db != DEFAULT_DB else os.path.join(args.root, DEFAULT_DB)
+        try:
+            code, count, warnings = generate_server(db, args.root, allowlist)
+        except FileNotFoundError as e:
+            print(f"sylva: {e}", file=sys.stderr)
+            return 1
+        out = args.out or os.path.join(args.root, ".codemcp", "functions_server.py")
+        os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+        with open(out, "w") as f:
+            f.write(code)
+        for w in warnings:
+            print(f"sylva: warning: {w}", file=sys.stderr)
+        print(f"sylva: wrote MCP function server ({count} tool(s)) -> {out}")
+        print(f"sylva: REVIEW it (it executes these functions), then run:  python {out}")
         return 0
 
     if args.command == "onboard":

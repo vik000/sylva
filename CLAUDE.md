@@ -929,6 +929,54 @@ others) with minimal setup, and surface it for reporting. (GitHub milestone
   symbol spans (Feature 7.1, done). Complements the query tools (1.6 / 3.5) and
   the MCP handshake (7.4 / #31).
 
+#### Feature 8.5 — Expose selected repo functions as an executable MCP server (issue #69)
+- Description: The deferred interpretation (B) from #41. Turn the analysed repo
+  into an MCP server whose tools are the repo's **own functions** — callable by
+  an agent — with **explicit, opt-in control over which functions are exposed**.
+  Distinct from 8.2 (query access to the graph): 8.5 lets an agent *invoke* the
+  repo's code, so it is opt-in and safety-scoped.
+- Inputs: repo root, db path, output path
+- **Settled design (decided): allowlist-only selection · dependency-free
+  generated server · standalone reviewable file · per-function tools + module
+  shorthand · Python execution backend first.** The **allowlist** is chosen over
+  a decorator because it is **language-neutral** (one config for Python/Rust/TS —
+  a decorator would need a per-language marker + scanner), **deterministic**
+  (a static declarative contract → identical server every time), and
+  **auditable** (the entire exposed surface in one file). No decorator.
+- Process:
+  - **Selection (opt-in; nothing exposed by default):** a language-neutral
+    allowlist config, e.g. `.codemcp/expose.toml` — naming functions to expose
+    (and a **module shorthand** = its public functions). Sylva resolves each name
+    against the graph (symbol + file + language). The allowlist format names any
+    language's targets so it stays valid as execution backends are added.
+  - **Generation:** `sylva expose --root .` writes a **reviewable, standalone**
+    MCP server file. **Python execution backend (first):** for each allowlisted
+    Python function, `from <import-path> import <fn>` (import path derived from
+    the file path relative to the root), wrap it as a `tools/call` tool, and
+    derive the argument schema from the **live signature** (`inspect.signature`
+    at runtime — no stored signatures). Non-Python targets are listed but skipped
+    with a note until their backend lands. Reuses Sylva's dependency-free
+    JSON-RPC/MCP framing (initialize / tools/list / tools/call) — the generated
+    server needs **no third-party runtime dependency**.
+  - **Safety:** Sylva **generates**; the **user reviews and runs** the server in
+    their own environment — Sylva executes nothing. The generated file carries a
+    header documenting the trust boundary + the exact exposed surface.
+- Outputs: a standalone server file (e.g. `.codemcp/functions_server.py`)
+  exposing exactly the allowlisted functions; a `sylva expose` CLI subcommand
+- Testing:
+  - An allowlisted function is exposed as a tool; a non-listed function is not
+  - Module shorthand exposes a module's public functions
+  - The generated server is valid Python, imports the target functions, and
+    derives a tool schema from each signature (in-process: import the generated
+    module, check its tool registry / call a tool)
+  - Empty / missing allowlist → a safe empty server (no crash), not an error
+  - Import-path derivation handles package nesting
+  - Non-Python allowlist entry is skipped with a note (backend not yet present)
+- Note: executes target code (opt-in) — the one feature where the artifact runs
+  the repo. Sylva stays the generator; leverages the function inventory (names,
+  files, docstrings) from Epics 1/9. Language-neutral selection is future-proof;
+  Python execution first, extensible. Ties to 8.3 (accessible functions in viz).
+
 ---
 
 ### Epic 9 — Structural Understanding (deterministic)
