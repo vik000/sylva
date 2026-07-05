@@ -1263,3 +1263,35 @@ runs an LLM itself; the skills orchestrate the agent side. (GitHub milestone
 - Note: depends on Epic 9 (9.2/9.4) + 4.7. No Rust change; pure Python emit over
   the existing analysis. Test code filtered (reuses 10.1's `_is_test_file`).
   Pairs with 10.1: brief (text) + diagrams (visual) = an onboarding pack.
+
+#### Feature 10.4 — understand-project skill (orchestrator) (issue #64)
+- Description: One command that takes an unknown repo to a documented, navigable,
+  agent-ready state — the end-to-end realisation of "enable the LLM to understand
+  the project". Orchestrates the deterministic pipeline; the agent-side test-gen
+  step (10.2) is optional and documented in the skill.
+- **Shape (same as 10.1/10.3): deterministic orchestrator core + skill wrapper.**
+  `sylva.onboard.onboard(root, db) ` runs: **index** (walk + extract + foreign +
+  edges + dataflow) → **brief** (10.1 → SYLVA.md) → **diagrams** (10.3 →
+  DIAGRAMS.md) → **MCP scaffold** (8.2 → .codemcp/mcp.json). `sylva onboard --root`
+  CLI. Each step is wrapped so a failure is recorded and the pipeline **continues**
+  (graceful degradation) — the deterministic pipeline never runs the target.
+- Inputs: root dir, db path (+ output paths)
+- Process:
+  - Factor the indexing core out of `_analyze` into a reusable
+    `index_codebase(root, db)` (dedup; used by `analyze` and `onboard`).
+  - `onboard()` runs index → brief → diagrams → init_mcp, collecting an artifact
+    summary; per-step try/except so one failure doesn't abort the rest.
+  - The skill wrapper documents the full agent pipeline including the optional
+    10.2 (generate e2e tests → real exec paths) step, run between index and brief
+    when a runnable env exists.
+- Outputs: a `.codemcp/sylva.db` graph + `SYLVA.md` + `DIAGRAMS.md` +
+  `.codemcp/mcp.json`, from one `sylva onboard` command; a skill definition
+- Testing:
+  - End-to-end on a sample repo yields graph + brief + diagrams + mcp scaffold
+  - Graceful degradation: the pipeline completes without running the target; a
+    per-step failure is recorded, not fatal
+  - `index_codebase` produces the graph (symbols + edges); `_analyze` still works
+    after the refactor (no regression)
+  - Negative: non-directory root → error
+- Note: sequenced last in Epic 10; pure orchestration over 10.1/10.3 + 8.2 +
+  the indexer. Depends on Epic 9. 10.2's runtime test-gen stays agent-side/optional.

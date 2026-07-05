@@ -16,61 +16,22 @@ import sylva
 DEFAULT_DB = ".codemcp/sylva.db"
 
 
-def _walk_foreign(root):
-    """Yield foreign-language source files to black-box (Feature 5.0).
-
-    Currently Rust (`.rs`); build artefacts (`target/`) and hidden dirs are
-    skipped. Kept in Python — this is a plain directory walk, not graph logic.
-    """
-    import pathlib
-
-    for p in pathlib.Path(root).rglob("*.rs"):
-        parts = set(p.parts)
-        if "target" in parts or any(seg.startswith(".") for seg in p.parts):
-            continue
-        yield str(p)
-
-
 def _analyze(root, db_path):
     """Analyze a codebase into the graph database. Returns a process exit code."""
+    from .onboard import index_codebase
+
     if not os.path.isdir(root):
         print(f"sylva: not a directory: {root}", file=sys.stderr)
         return 1
 
-    os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
-    sylva.init_db(db_path)
+    idx = index_codebase(root, db_path, log=bool(os.environ.get("SYLVA_LOG")))
 
-    files = sylva.walk_python_files(root)
-    total_symbols = 0
-    skipped = 0
-    for path in files:
-        try:
-            total_symbols += sylva.write_symbols(db_path, path, sylva.extract_symbols(path))
-        except Exception as e:  # unreadable / undecodable file — skip, don't abort
-            skipped += 1
-            if os.environ.get("SYLVA_LOG"):
-                print(f"sylva: skipping '{path}': {e}", file=sys.stderr)
-
-    # Feature 5.0 — black-box foreign (Rust/PyO3) modules by their export surface.
-    foreign = 0
-    for path in _walk_foreign(root):
-        try:
-            exports = sylva.extract_foreign_exports(path)
-            if exports:  # only index files that actually declare an export surface
-                sylva.write_symbols(db_path, path, exports)
-                foreign += len(exports)
-        except Exception as e:
-            if os.environ.get("SYLVA_LOG"):
-                print(f"sylva: skipping foreign '{path}': {e}", file=sys.stderr)
-
-    edges = sylva.build_edges(db_path)
-    flows = sylva.build_dataflow(db_path)  # Feature 4.12 — static parameter flow
-
-    note = f" ({skipped} skipped)" if skipped else ""
-    fnote = f", {foreign} foreign export(s)" if foreign else ""
+    note = f" ({idx['skipped']} skipped)" if idx["skipped"] else ""
+    fnote = f", {idx['foreign']} foreign export(s)" if idx["foreign"] else ""
     print(
-        f"sylva: analyzed {len(files)} file(s){note}, "
-        f"{total_symbols} symbols, {edges} relationships, {flows} data-flow(s){fnote} -> {db_path}"
+        f"sylva: analyzed {idx['files']} file(s){note}, "
+        f"{idx['symbols']} symbols, {idx['edges']} relationships, "
+        f"{idx['flows']} data-flow(s){fnote} -> {db_path}"
     )
     print(f"sylva: now run  sylva serve-ui --db {db_path}")
     return 0
@@ -151,6 +112,12 @@ def main(argv=None):
     dg.add_argument("--db", default=DEFAULT_DB, help=f"Graph database path (default {DEFAULT_DB})")
     dg.add_argument("--out", default="DIAGRAMS.md", help="Output file (default DIAGRAMS.md)")
 
+    ob = sub.add_parser(
+        "onboard", help="One command: index + brief + diagrams + MCP scaffold"
+    )
+    ob.add_argument("--root", required=True, help="Directory (codebase) to onboard")
+    ob.add_argument("--db", default=DEFAULT_DB, help=f"Graph database path (default {DEFAULT_DB})")
+
     args = parser.parse_args(argv)
 
     # Bare `sylva` (no command): show the quickstart + available commands, then
@@ -220,6 +187,35 @@ def main(argv=None):
         with open(args.out, "w") as f:
             f.write(md)
         print(f"sylva: wrote diagrams -> {args.out}")
+        return 0
+
+    if args.command == "onboard":
+        from .onboard import onboard
+
+        if not os.path.isdir(args.root):
+            print(f"sylva: not a directory: {args.root}", file=sys.stderr)
+            return 1
+        # Write all artifacts *into* the onboarded project, not the cwd.
+        root = args.root
+        db = args.db if args.db != DEFAULT_DB else os.path.join(root, DEFAULT_DB)
+        result = onboard(
+            root,
+            db,
+            brief_out=os.path.join(root, "SYLVA.md"),
+            diagram_out=os.path.join(root, "DIAGRAMS.md"),
+            mcp_out=os.path.join(root, ".codemcp"),
+        )
+        idx, art = result["index"], result["artifacts"]
+        print(
+            f"sylva: onboarded {args.root} — {idx['symbols']} symbols, "
+            f"{idx['edges']} relationships, {idx['foreign']} foreign export(s)."
+        )
+        for label, key in (("graph", "db"), ("brief", "brief"), ("diagrams", "diagrams"), ("MCP config", "mcp")):
+            if key in art:
+                print(f"sylva:   {label:<11} -> {art[key]}")
+            elif f"{key}_error" in art:
+                print(f"sylva:   {label:<11} FAILED: {art[key + '_error']}", file=sys.stderr)
+        print("sylva: explore with  sylva serve-ui  or connect the MCP scaffold to your agent.")
         return 0
 
     parser.error(f"unknown command: {args.command}")  # unreachable via argparse
