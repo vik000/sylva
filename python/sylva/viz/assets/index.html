@@ -90,6 +90,7 @@
       <div class="toggle"><input type="checkbox" id="k-function" checked><span class="dot" style="background:#6ea8fe"></span>functions</div>
       <div class="toggle"><input type="checkbox" id="k-class" checked><span class="dot" style="background:#f2a65a"></span>classes</div>
       <div class="toggle"><input type="checkbox" id="k-import" checked><span class="dot" style="background:#7ee787"></span>imports</div>
+      <div class="toggle"><input type="checkbox" id="k-foreign" checked><span class="dot" style="background:#e3a008;border-radius:2px"></span>foreign modules (opaque)</div>
     </div>
     <div class="field">
       <label>Overlay</label>
@@ -102,7 +103,8 @@
 </div>
 <script>
 "use strict";
-const KIND_COLOR = { function: "#6ea8fe", class: "#f2a65a", import: "#7ee787", error: "#f85149", module: "#a371f7" };
+const KIND_COLOR = { function: "#6ea8fe", class: "#f2a65a", import: "#7ee787", error: "#f85149", module: "#a371f7",
+  foreign_module: "#e3a008", foreign_export: "#e3a008" };  // 5.0.1 — opaque foreign boundary (amber)
 // Coverage overlay palette (red -> amber -> green; grey = no data).
 const COV_COLOR = { uncovered: "#f85149", low: "#f0883e", partial: "#d4a72c", high: "#7ee787", covered: "#3fb950", none: "#484f58" };
 const canvas = document.getElementById("c");
@@ -125,6 +127,7 @@ let focusMode = false, focusCenter = null, focusDepth = 1;
 let focusSet = new Set(), pinned = new Set(), focusHistory = [];
 let RAW = { nodes: [], links: [], modules: [], module_links: [] };
 const kinds = { function: true, class: true, import: true };
+let showForeign = true;  // 5.0.1 — show/hide black-box foreign modules
 let filterText = "";
 
 // A file path -> its short module label (basename).
@@ -267,9 +270,15 @@ function radius(n) { return 3 + Math.sqrt(n.degree || 0) * 1.8; }
 function visible(n) {
   // Focus mode: only the neighbourhood set (plus pinned nodes) is shown.
   if (focusMode && !focusSet.has(n.id) && !pinned.has(n.id)) return false;
-  // The kind filter (functions/classes/imports) only applies to the
-  // function-level view; module nodes are always kind-visible.
-  if (!moduleView && !kinds[n.kind]) return false;
+  // The kind filter (functions/classes/imports) and the 5.0.1 foreign toggle
+  // only apply to the function-level view; module nodes are always kind-visible.
+  if (!moduleView) {
+    if (n.foreign || n.kind === "foreign_module" || n.kind === "foreign_export") {
+      if (!showForeign) return false;
+    } else if (kinds.hasOwnProperty(n.kind) && !kinds[n.kind]) {
+      return false;  // a known, unchecked kind (unknown kinds stay visible)
+    }
+  }
   if (filterText) {
     const hay = (n.name + " " + (n.file || "")).toLowerCase();
     if (!hay.includes(filterText)) return false;
@@ -298,7 +307,13 @@ function draw() {
     ctx.fillStyle = coverageMode
       ? (COV_COLOR[n.coverage_state] || COV_COLOR.none)
       : (KIND_COLOR[n.kind] || "#9aa4b8");
-    ctx.beginPath(); ctx.arc(n.x, n.y, radius(n), 0, Math.PI * 2); ctx.fill();
+    // 5.0.1 — foreign boundary nodes are drawn as squares (opaque black box),
+    // the rest as circles.
+    const r = radius(n);
+    ctx.beginPath();
+    if (n.foreign) ctx.rect(n.x - r, n.y - r, r * 2, r * 2);
+    else ctx.arc(n.x, n.y, r, 0, Math.PI * 2);
+    ctx.fill();
     if (n.id === (selected && selected.id) || n.id === hoverId) {
       ctx.strokeStyle = "#fff"; ctx.lineWidth = 2 / view.k; ctx.stroke();
     } else if (focusMode && pinned.has(n.id)) {
@@ -601,6 +616,7 @@ document.getElementById("filter").addEventListener("input", e => { filterText = 
 for (const k of ["function", "class", "import"]) {
   document.getElementById("k-" + k).addEventListener("change", e => { kinds[k] = e.target.checked; draw(); });
 }
+document.getElementById("k-foreign").addEventListener("change", e => { showForeign = e.target.checked; draw(); });
 document.getElementById("cov-mode").addEventListener("change", e => {
   coverageMode = e.target.checked; updateCovNote(); draw();
 });

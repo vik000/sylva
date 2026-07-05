@@ -95,9 +95,10 @@ class TestBuildGraph:
         db = _init(tmp_path)
         _seed(db)
         node = build_graph(str(db))["nodes"][0]
-        # `coverage_state` was added by Feature 4.5 (coverage overlay).
+        # `coverage_state` added by 4.5 (overlay); `foreign` added by 5.0.1.
         assert set(node.keys()) == {
-            "id", "name", "kind", "file", "line", "coverage", "coverage_state", "degree",
+            "id", "name", "kind", "file", "line", "coverage", "coverage_state",
+            "degree", "foreign",
         }
 
     def test_empty_graph(self, tmp_path):

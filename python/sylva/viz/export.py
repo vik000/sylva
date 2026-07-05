@@ -72,6 +72,8 @@ def build_graph(db_path):
             "coverage": coverage,  # may be None
             "coverage_state": coverage_state(coverage),  # 4.5 overlay band
             "degree": degree.get(sid, 0),
+            # Feature 5.0.1 — black-box foreign (Rust/PyO3) boundary node.
+            "foreign": kind in ("foreign_module", "foreign_export"),
         }
         for (sid, name, kind, line, coverage, path) in symbols
     ]
