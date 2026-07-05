@@ -144,6 +144,12 @@ def main(argv=None):
     un.add_argument("--db", default=DEFAULT_DB, help=f"Graph database path (default {DEFAULT_DB})")
     un.add_argument("--json", action="store_true", help="Emit the plan as JSON")
 
+    tr = sub.add_parser("trace", help="Run the test suite under the runtime tracer and record real call-order execution flows")
+    tr.add_argument("--db", default=DEFAULT_DB, help=f"Graph database path (default {DEFAULT_DB})")
+    tr.add_argument("--root", default=".", help="Project root to run tests in (default .)")
+    tr.add_argument("--tests", default="", help="Extra pytest args, e.g. a path or -k expr")
+    tr.add_argument("--trace-file", help="Ingest an existing tracer JSON instead of running tests")
+
     ex2 = sub.add_parser(
         "expose", help="Generate an MCP server exposing allowlisted repo functions"
     )
@@ -309,6 +315,33 @@ def main(argv=None):
         if untested:
             print("\nsylva: write e2e tests for the '-> ' entrypoints, then run:")
             print("       sylva logic-paths --run \"coverage run -m pytest\" --source <pkg>")
+        return 0
+
+    if args.command == "trace":
+        import subprocess
+        import tempfile
+
+        from .tracing import ingest_trace
+
+        trace_file = args.trace_file
+        try:
+            if not trace_file:
+                fd, trace_file = tempfile.mkstemp(prefix="sylva-trace-", suffix=".json")
+                os.close(fd)
+                env = dict(os.environ,
+                           SYLVA_TRACE_OUT=trace_file,
+                           SYLVA_TRACE_ROOT=os.path.abspath(args.root))
+                cmd = [sys.executable, "-m", "pytest", "-p", "sylva.tracer"]
+                if args.tests:
+                    cmd += args.tests.split()
+                print(f"sylva: tracing `{' '.join(cmd[2:])}` in {args.root} ...")
+                subprocess.run(cmd, cwd=args.root, env=env, check=False)
+            result = ingest_trace(args.db, trace_file)
+        except FileNotFoundError as e:
+            print(f"sylva: {e}", file=sys.stderr)
+            return 1
+        print(f"sylva: recorded {result['tests']} test(s), {result['calls']} ordered call(s) -> {args.db}")
+        print("sylva: reload `sylva serve-ui` -> sidebar 'Execution traces (real order)' -> click a test.")
         return 0
 
     if args.command == "expose":

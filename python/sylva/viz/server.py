@@ -33,6 +33,7 @@ from .export import (
     system_flow,
     tests,
 )
+from ..tracing import list_traces, trace_view
 
 ASSETS_DIR = os.path.join(os.path.dirname(__file__), "assets")
 
@@ -71,6 +72,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._serve_dataflow()
         elif route == "/system-flow":
             self._serve_system_flow()
+        elif route == "/traces":
+            self._serve_traces()
+        elif route == "/trace":
+            self._serve_trace()
         else:
             self._send_json(404, {"error": f"not found: {self.path}"})
 
@@ -153,6 +158,26 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._send_json(500, {"error": str(e)})
         except Exception as e:
             self._send_json(500, {"error": f"failed to list tests: {e}"})
+
+    def _serve_traces(self):
+        try:
+            self._send_json(200, list_traces(self._db_path))
+        except FileNotFoundError as e:
+            self._send_json(500, {"error": str(e)})
+        except Exception as e:
+            self._send_json(500, {"error": f"failed to list traces: {e}"})
+
+    def _serve_trace(self):
+        test = parse_qs(urlparse(self.path).query).get("test", [None])[0]
+        if not test:
+            self._send_json(400, {"error": "missing required query parameter: test"})
+            return
+        try:
+            self._send_json(200, trace_view(self._db_path, test))
+        except FileNotFoundError as e:
+            self._send_json(500, {"error": str(e)})
+        except Exception as e:
+            self._send_json(500, {"error": f"failed to build trace: {e}"})
 
     def _serve_neighborhood(self):
         q = parse_qs(urlparse(self.path).query)

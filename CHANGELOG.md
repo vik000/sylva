@@ -5,6 +5,14 @@ grouped by the epics that shaped each line.
 
 ## 4.x — Polyglot analysis, executable MCP & full reporting
 
+- **4.2.0** — **Runtime call tracer (dynamic tier).** `sylva trace` runs the
+  project's tests under a `sys.setprofile` hook and records the **real order**
+  functions call each other — the true `test → A → B → C` succession with call
+  depth, not a coverage-derived set. Persisted as an ordered `call_trace` table
+  and rendered in the viz as a **top-down flowchart of labelled boxes**
+  ("Execution traces (real order)" sidebar). This is the first genuinely
+  *dynamic* view — everything else stays static/deterministic.
+
 The 4.0 major marks Sylva going **beyond Python**: TypeScript/JavaScript are now
 fully parsed alongside Python (Rust stays a black box), an agent can be granted
 **execute** access to selected functions, and the analysis ships a **health/risk
