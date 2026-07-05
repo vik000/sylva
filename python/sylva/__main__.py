@@ -125,6 +125,25 @@ def main(argv=None):
     ob.add_argument("--root", required=True, help="Directory (codebase) to onboard")
     ob.add_argument("--db", default=DEFAULT_DB, help=f"Graph database path (default {DEFAULT_DB})")
 
+    cov = sub.add_parser("coverage", help="Attach a coverage report to the graph (module colours + report)")
+    cov.add_argument("--db", default=DEFAULT_DB, help=f"Graph database path (default {DEFAULT_DB})")
+    cov.add_argument("--report", "--lcov", dest="report", help="LCOV/Cobertura report to ingest")
+    cov.add_argument("--format", default="lcov", choices=["lcov", "cobertura"], help="Report format (default lcov)")
+    cov.add_argument("--run", metavar="CMD", help="Run this test command (in --root) to produce the report first, then ingest")
+    cov.add_argument("--root", default=".", help="Project root for --run (default .)")
+
+    lp = sub.add_parser("logic-paths", help="Turn per-test coverage into execution-path block diagrams")
+    lp.add_argument("--db", default=DEFAULT_DB, help=f"Graph database path (default {DEFAULT_DB})")
+    lp.add_argument("--coverage-file", default=".coverage", help="coverage.py data file (default .coverage)")
+    lp.add_argument("--run", metavar="CMD", help="Run this test command with per-test contexts (in --root), then ingest")
+    lp.add_argument("--source", help="Package to measure when using --run (coverage `source`)")
+    lp.add_argument("--root", default=".", help="Project root for --run (default .)")
+
+    un = sub.add_parser("understand", help="Index the repo and report which entrypoints have no test (agent plan)")
+    un.add_argument("--root", required=True, help="Directory (codebase) to understand")
+    un.add_argument("--db", default=DEFAULT_DB, help=f"Graph database path (default {DEFAULT_DB})")
+    un.add_argument("--json", action="store_true", help="Emit the plan as JSON")
+
     ex2 = sub.add_parser(
         "expose", help="Generate an MCP server exposing allowlisted repo functions"
     )
@@ -223,6 +242,73 @@ def main(argv=None):
         with open(json_path, "w") as f:
             _json.dump(data, f, indent=2, sort_keys=True)
         print(f"sylva: wrote report -> {md_path} and {json_path}")
+        return 0
+
+    if args.command == "coverage":
+        from . import pipeline
+
+        report = args.report
+        try:
+            if args.run:
+                cov_file = pipeline.run_tests(args.root, args.run, per_test=False)
+                if not report:
+                    # After a run, look for a produced LCOV report.
+                    guess = os.path.join(args.root, "coverage.lcov")
+                    report = guess if os.path.exists(guess) else None
+            if not report:
+                print("sylva: no coverage report to ingest (pass --report FILE, or --run a command that writes coverage.lcov)", file=sys.stderr)
+                return 1
+            n = pipeline.ingest_coverage(args.db, report, args.format)
+        except (FileNotFoundError, ValueError) as e:
+            print(f"sylva: {e}", file=sys.stderr)
+            return 1
+        print(f"sylva: applied coverage for {n} file(s) -> {args.db}")
+        print("sylva: reload `sylva serve-ui` and switch on Coverage mode.")
+        return 0
+
+    if args.command == "logic-paths":
+        from . import pipeline
+
+        cov_file = args.coverage_file
+        try:
+            if args.run:
+                cov_file = pipeline.run_tests(args.root, args.run, per_test=True, source=args.source)
+            result = pipeline.ingest_logic_paths(args.db, cov_file)
+        except (FileNotFoundError, ValueError) as e:
+            print(f"sylva: {e}", file=sys.stderr)
+            return 1
+        print(f"sylva: mapped {result['tests']} test(s) -> {result['edges']} test_covers edge(s)")
+        print("sylva: reload `sylva serve-ui` -> sidebar 'Logic paths (from tests)' -> click a test.")
+        return 0
+
+    if args.command == "understand":
+        import json as _json
+
+        from . import pipeline
+        from .onboard import index_codebase
+
+        if not os.path.isdir(args.root):
+            print(f"sylva: not a directory: {args.root}", file=sys.stderr)
+            return 1
+        index_codebase(args.root, args.db)
+        try:
+            plan = pipeline.test_plan(args.db)
+        except FileNotFoundError as e:
+            print(f"sylva: {e}", file=sys.stderr)
+            return 1
+        if args.json:
+            print(_json.dumps(plan, indent=2))
+            return 0
+        untested = plan["untested"]
+        print(f"\nsylva: {len(plan['entrypoints'])} entrypoint(s); {len(untested)} without a test.\n")
+        for p in plan["entrypoints"]:
+            mark = "  " if p["has_test"] else "->"
+            star = "*" if p["primary"] else " "
+            tag = "tested" if p["has_test"] else "NO TEST"
+            print(f" {mark}{star} {p['entrypoint']:<28} [{tag}]  {p['reason']}  ({p['file']})")
+        if untested:
+            print("\nsylva: write e2e tests for the '-> ' entrypoints, then run:")
+            print("       sylva logic-paths --run \"coverage run -m pytest\" --source <pkg>")
         return 0
 
     if args.command == "expose":

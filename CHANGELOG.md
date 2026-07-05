@@ -10,6 +10,14 @@ fully parsed alongside Python (Rust stays a black box), an agent can be granted
 **execute** access to selected functions, and the analysis ships a **health/risk
 report**.
 
+- **4.1.0** — **Pipeline subcommands + the `understand` orchestrator.** New
+  native commands: `sylva understand` (index + which entrypoints lack a test),
+  `sylva logic-paths` (per-test coverage → execution-path block diagrams — the
+  coverage→trace bridge is now one command, reading `.coverage` **dependency-free**
+  by decoding coverage.py's `numbits` directly), and `sylva coverage` (LCOV/
+  Cobertura overlay). New `sylva-understand` skill: an agent triggers one flow —
+  understand → write e2e tests for untested entrypoints → ingest → interactive
+  block diagrams. Deterministic throughout; the only LLM step is writing tests.
 - **4.0.0** — **Detailed analysis report** (`sylva report` → `report/REPORT.md` +
   `report.json`, Feature 8.1): architecture, coverage gaps, change-risk (blast
   radius of the hubs) and structural gaps (orphans) — deterministic and diffable.

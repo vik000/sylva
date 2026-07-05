@@ -137,4 +137,6 @@ class TestSkillArtifact:
         skill = os.path.join(root, "skills", "sylva-generate-tests.md")
         assert os.path.isfile(skill)
         text = open(skill).read()
-        assert "suggest_test_targets" in text and "map_tests_to_symbols" in text
+        # Targets come from suggest_test_targets; ingest is now the one-command
+        # `sylva logic-paths` (which wraps map_tests_to_symbols).
+        assert "suggest_test_targets" in text and "sylva logic-paths" in text

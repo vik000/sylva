@@ -29,23 +29,16 @@ coverage your normal test run produces.
    internals. Aim for tests that drive execution *through* the chokepoints and
    gateways Sylva flagged.
 
-3. **Run them with per-test coverage** — in the project's own environment (this
-   is the only step that executes code, and it's your normal test run):
+3. **Run them and ingest, in one command** — Sylva runs the project's own tests
+   with per-test coverage and turns them into `test_covers` edges (this is the
+   only step that executes code, and it's your normal test run):
    ```
-   coverage run --context=test -m pytest
-   coverage lcov            # or a context-annotated report
+   sylva logic-paths --run "coverage run -m pytest" --source <your_package>
    ```
+   (Prefer to run tests yourself? Set `dynamic_context = test_function`, run
+   them, then `sylva logic-paths --coverage-file .coverage`.)
 
-4. **Ingest the coverage** so the paths become queryable:
-   ```python
-   import sylva
-   cov = sylva.parse_coverage("coverage.lcov", "lcov")
-   sylva.apply_coverage(".codemcp/sylva.db", cov)
-   # per-test trace: {test_name: {source_path: [lines]}}
-   sylva.map_tests_to_symbols(".codemcp/sylva.db", trace)
-   ```
-
-5. **See the verified logic paths.** Re-open `sylva serve-ui`: each test now
+4. **See the verified logic paths.** Re-open `sylva serve-ui`: each test now
    appears under **"Logic paths (from tests)"** in the sidebar — click one to
    render the execution path it actually exercised as a block diagram.
 
