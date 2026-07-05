@@ -200,6 +200,62 @@ fn collect_call_sites(node: Node, src: &[u8], out: &mut Vec<CallSite>) {
     }
 }
 
+/// Collect TS/JS call sites (Feature 5.6). A `call_expression` whose callee is a
+/// bare `identifier` (`b()`) or a `member_expression` (`obj.m()`): the callee is
+/// the method name; the receiver is `this` → SelfCls, a plain identifier →
+/// Local, else Other. Same `CallSite` shape as Python, so the resolver is reused.
+fn collect_call_sites_ts(node: Node, src: &[u8], out: &mut Vec<CallSite>) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "call_expression" {
+            if let Some(func) = child.child_by_field_name("function") {
+                let (name, receiver) = match func.kind() {
+                    "identifier" => (Some(node_text(func, src)), Receiver::Bare),
+                    "member_expression" => {
+                        let prop =
+                            func.child_by_field_name("property").map(|p| node_text(p, src));
+                        let recv = match func.child_by_field_name("object") {
+                            Some(obj) if obj.kind() == "this" => Receiver::SelfCls,
+                            Some(obj) if obj.kind() == "identifier" => {
+                                Receiver::Local(node_text(obj, src))
+                            }
+                            _ => Receiver::Other,
+                        };
+                        (prop, recv)
+                    }
+                    _ => (None, Receiver::Other),
+                };
+                if let Some(name) = name {
+                    out.push(CallSite {
+                        line: child.start_position().row as i64 + 1,
+                        callee: name,
+                        receiver,
+                    });
+                }
+            }
+        }
+        collect_call_sites_ts(child, src, out);
+    }
+}
+
+/// The call-graph language of a file (by extension): Python is fully resolved;
+/// TS/JS get name-based call edges (Feature 5.6); everything else (`.rs` foreign,
+/// unknown) contributes no call sites.
+enum SrcLang {
+    Python,
+    TsJs,
+    Skip,
+}
+
+fn src_lang(path: &str) -> SrcLang {
+    let ext = std::path::Path::new(path).extension().and_then(|e| e.to_str()).unwrap_or("");
+    match ext {
+        "py" | "pyi" => SrcLang::Python,
+        "ts" | "tsx" | "mts" | "cts" | "js" | "jsx" | "mjs" | "cjs" => SrcLang::TsJs,
+        _ => SrcLang::Skip,
+    }
+}
+
 /// Collect trivial `var = ClassName(...)` assignments as `(line, var, class_name)`
 /// — the local-binding type hints used by Feature 7.10's `obj.method()`
 /// resolution. Only a bare-identifier target with a bare-identifier constructor
@@ -588,6 +644,11 @@ pub fn build_edges(db_path: &str) -> PyResult<usize> {
     parser
         .set_language(&tree_sitter_python::LANGUAGE.into())
         .map_err(|e| PyRuntimeError::new_err(format!("failed to load Python grammar: {}", e)))?;
+    // Feature 5.6 — a second parser for TS/JS call sites (TSX grammar superset).
+    let mut ts_parser = Parser::new();
+    ts_parser
+        .set_language(&tree_sitter_typescript::LANGUAGE_TSX.into())
+        .map_err(|e| PyRuntimeError::new_err(format!("failed to load TS grammar: {}", e)))?;
 
     let verbose = crate::verbose();
     let mut skipped_ambiguous = 0usize;
@@ -619,9 +680,10 @@ pub fn build_edges(db_path: &str) -> PyResult<usize> {
     // --- Call edges --------------------------------------------------------
     let mut call_edges: Vec<(i64, i64)> = Vec::new();
     for (file_id, path) in &files {
-        // Only Python files are parsed for call sites; foreign files (Feature
-        // 5.0) contribute their export symbols as resolution targets, not calls.
-        if !path.ends_with(".py") {
+        // Dispatch by language: Python (full), TS/JS (name-based, Feature 5.6),
+        // or skip (foreign `.rs` per 5.0, unknown extensions).
+        let lang = src_lang(path);
+        if matches!(lang, SrcLang::Skip) {
             continue;
         }
         let source = match std::fs::read_to_string(path) {
@@ -633,7 +695,11 @@ pub fn build_edges(db_path: &str) -> PyResult<usize> {
                 continue;
             }
         };
-        let tree = match parser.parse(source.as_bytes(), None) {
+        let active = match lang {
+            SrcLang::TsJs => &mut ts_parser,
+            _ => &mut parser,
+        };
+        let tree = match active.parse(source.as_bytes(), None) {
             Some(t) => t,
             None => {
                 if verbose {
@@ -643,10 +709,19 @@ pub fn build_edges(db_path: &str) -> PyResult<usize> {
             }
         };
 
+        // Call sites per language; local-binding assignments are Python-only.
         let mut calls = Vec::new();
-        collect_call_sites(tree.root_node(), source.as_bytes(), &mut calls);
         let mut assigns = Vec::new();
-        collect_assignments(tree.root_node(), source.as_bytes(), &mut assigns);
+        match lang {
+            SrcLang::Python => {
+                collect_call_sites(tree.root_node(), source.as_bytes(), &mut calls);
+                collect_assignments(tree.root_node(), source.as_bytes(), &mut assigns);
+            }
+            SrcLang::TsJs => {
+                collect_call_sites_ts(tree.root_node(), source.as_bytes(), &mut calls);
+            }
+            SrcLang::Skip => unreachable!(),
+        }
 
         let empty = Vec::new();
         let candidates = by_file.get(file_id).unwrap_or(&empty);

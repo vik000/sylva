@@ -694,6 +694,44 @@ Never: silent corruption, undefined behaviour, unlogged failures.
   policy: `.rs` stays black-boxed (matches 5.0/5.2). Unblocks true polyglot
   analysis together with 5.6.
 
+#### Feature 5.6 — TypeScript/JavaScript call-edge resolution (issue #71)
+- Description: `build_edges` extracts call sites with tree-sitter-**python
+  only**, so TS/JS symbols indexed by 5.5 are nodes with **no relationships** —
+  no `calls` edges, hence no trace/blast/spine/centrality/system-flow for them.
+  Add per-language call-site extraction so TS/JS symbols get real edges, feeding
+  all of Epic 4/9. (Rust is **out of scope** — it is black-boxed by 5.0, so its
+  internals aren't in the graph to link.)
+- **Scope (cheap subset first, like every language feature):** name-based
+  resolution — the existing **language-neutral** resolver (same-file preference,
+  unique-global, ambiguous-skip) once call sites are captured. `this.method()`
+  type-resolution to the enclosing class **falls out for free** (7.10's class-
+  membership works over TS classes too). **Import-aware** disambiguation and
+  local-binding inference are **deferred** (TS `import` symbols aren't extracted
+  yet — 5.3 skipped them).
+- Inputs: db path (edge build)
+- Process:
+  - Lift the call-site model (`CallSite` / `Receiver`) into the extractor layer;
+    add a per-language **call-site extractor** (`call_sites(source)`): Python
+    (the existing logic) + a new **TS/JS** one (tree-sitter `call_expression`:
+    callee = identifier or member `.property`; receiver: `this` → SelfCls, a
+    plain identifier → Local, else Other).
+  - `build_edges` dispatches by extension: `.py`→Python, `.ts/.tsx/.js/.jsx/…`→
+    TS/JS; `.rs`/unknown skipped. The **resolution** (import-aware for Python,
+    same-file, unique-global, ambiguous-skip, type-aware `self`/`this`) is reused
+    unchanged — it is language-neutral. Python `collect_assignments` (local
+    binding) stays `.py`-only.
+- Outputs: TS/JS `calls` edges in the graph; `get_callers`/`get_dependencies`/
+  `trace_calls`/`blast_radius`/spine/centrality/system-flow work on TS/JS
+- Testing:
+  - TS: `function a(){ b(); }` + `function b(){}` → edge a→b
+  - TS method: `this.m()` resolves to the enclosing class's `m`
+  - JS same-file resolution; ambiguous same-name skipped (no false edge)
+  - Python behaviour unchanged (regression) — self.method / import-aware intact
+  - `.rs` still produces no internal edges (black-boxed)
+- Note: completes polyglot analysis (5.5 indexes; 5.6 gives structure). Import-
+  aware TS (needs TS `import` extraction) + TS local-binding type inference are
+  tracked follow-ups. Reuses the neutral resolver — no new resolution logic.
+
 ---
 
 ### Epic 6 — Semantic Layer
