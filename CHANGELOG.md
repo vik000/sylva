@@ -5,6 +5,11 @@ grouped by the epics that shaped each line.
 
 ## 4.x — Polyglot analysis, executable MCP & full reporting
 
+- **4.7.0** — **Task-oriented sidebar.** The sidebar is reorganised into three
+  plain-language groups — **See the whole system** (the overview diagram),
+  **Follow one test** (runtime traces + coverage paths, collapsed with live
+  counts), and **Dig into the code** (the force graph + all filters). Much less
+  crowded; the confusing "logic paths vs execution traces" wording is gone.
 - **4.6.0** — **Viz lands on the high-level diagram; simpler sidebar.** The UI
   now opens on the **high-level block diagram** (system flow) instead of the
   force graph, and the sidebar leads with the **high-level diagram button +

@@ -51,6 +51,9 @@
   details.more > summary::before { content: "▸ "; }
   details.more[open] > summary::before { content: "▾ "; }
   details.more[open] > summary { color: var(--ink); }
+  .group-head { color: var(--ink); font-size: 10px; font-weight: 700; letter-spacing: .9px;
+    text-transform: uppercase; opacity: .6; margin: 16px 0 6px; }
+  .cnt { color: var(--accent); font-weight: 400; }
 </style>
 </head>
 <body>
@@ -69,18 +72,27 @@
       <div id="focus-crumb" class="hint" style="margin-top:6px"></div>
       <button id="focus-back">← Exit focus</button>
     </div>
-    <!-- Primary: the high-level diagram + the two path views, up top. -->
+    <!-- 1. See the whole system -->
+    <div class="group-head">See the whole system</div>
     <div class="field">
-      <button id="system-flow" title="Whole-project block diagram, rooted at the inferred entrypoint">▤ High-level diagram</button>
-    </div>
-    <div class="field">
-      <div class="navhead">Logic paths (from tests) — click for boxes</div>
-      <div id="nav-tests" class="navlist"><div class="row">loading…</div></div>
-      <div class="navhead">Execution traces (real order) — click for boxes</div>
-      <div id="nav-traces" class="navlist"><div class="row">loading…</div></div>
+      <button id="system-flow" title="Whole-project block diagram, rooted at the inferred entrypoint">▤ System overview</button>
     </div>
 
-    <!-- Secondary: everything else, tucked away. -->
+    <!-- 2. Follow one test — pick a test, see how it ran, as boxes -->
+    <div class="group-head">Follow one test</div>
+    <details class="more">
+      <summary>Runtime traces <span id="cnt-traces" class="cnt"></span></summary>
+      <div class="hint" style="margin:2px 0 6px">The real order calls happened, from <code>sylva trace</code>.</div>
+      <div id="nav-traces" class="navlist"><div class="row">loading…</div></div>
+    </details>
+    <details class="more">
+      <summary>From coverage <span id="cnt-tests" class="cnt"></span></summary>
+      <div class="hint" style="margin:2px 0 6px">What each test touched, from coverage.</div>
+      <div id="nav-tests" class="navlist"><div class="row">loading…</div></div>
+    </details>
+
+    <!-- 3. Dig into the code -->
+    <div class="group-head">Dig into the code</div>
     <details class="more">
       <summary>Explore &amp; filters</summary>
       <div class="field">
@@ -708,9 +720,12 @@ async function loadTests() {
   try { ts = await (await fetch("tests")).json(); }
   catch (e) { return; }
   const el = document.getElementById("nav-tests");
+  const cnt = document.getElementById("cnt-tests");
   el.innerHTML = "";
-  if (!ts || ts.error || !ts.length) {
-    el.innerHTML = `<div class="row">No coverage-mapped tests yet.</div>`;
+  const n = (ts && !ts.error) ? ts.length : 0;
+  if (cnt) cnt.textContent = `(${n})`;
+  if (!n) {
+    el.innerHTML = `<div class="row">None yet — run <code>sylva logic-paths</code>.</div>`;
     return;
   }
   for (const t of ts.slice(0, 30)) {
@@ -733,9 +748,12 @@ async function loadTraces() {
   try { ts = await (await fetch("traces")).json(); }
   catch (e) { return; }
   const el = document.getElementById("nav-traces");
+  const cnt = document.getElementById("cnt-traces");
   el.innerHTML = "";
-  if (!ts || ts.error || !ts.length) {
-    el.innerHTML = `<div class="row">No runtime traces. Run <code>sylva trace</code>.</div>`;
+  const n = (ts && !ts.error) ? ts.length : 0;
+  if (cnt) cnt.textContent = `(${n})`;
+  if (!n) {
+    el.innerHTML = `<div class="row">None yet — run <code>sylva trace</code>.</div>`;
     return;
   }
   for (const t of ts.slice(0, 40)) {
