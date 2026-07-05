@@ -782,6 +782,41 @@ these group deferred notes so they are tracked, not lost. (GitHub milestone #7.)
     with `via: 'imports'`, without seeding the edge by hand
 - Note: distinct from Feature 7.7 (#36), which is about call resolution.
 
+#### Feature 7.10 — Type-aware method call resolution (issue #45)
+- Surfaced in: Features 7.7 (#36) / 7.8 (#37), both closed — this is their
+  deferred "type inference" half. On real repos it is the dominant source of
+  dropped edges (Flask: ~900 references stay ambiguous/unresolved after #36/#37,
+  e.g. `self.get()`, `obj.add_url_rule()`), undercounting `get_callers`,
+  `blast_radius`, `trace_calls`, and thinning every Epic 9 view.
+- Description: Call resolution is name-based, so `obj.method()` resolves to *any*
+  unique `method` and same-named methods across classes are skipped as ambiguous.
+  Add light, conservative receiver type inference in `build_edges` — never invent
+  a false edge; ambiguous-skip stays the fallback.
+- Inputs: db path (edge build), reusing the existing extractor + `build_edges`
+- Process (build on the existing resolution, don't redo #36/#37):
+  - **Class membership:** map each method (a `function` whose span is nested in a
+    `class` span) to its enclosing class, so a class's own methods are a
+    resolution scope.
+  - **`self.method()`** (and `cls.method()`) → the enclosing class's `method`,
+    even when other classes define `method`.
+  - **Simple local binding:** `x = Foo(); x.method()` → `Foo.method` when `Foo`
+    resolves to a known class (track trivial `name = ClassName(...)` assignments
+    within a function body).
+  - Narrow candidates by class membership + imports; if still ambiguous, skip
+    (no false edge). Keep the bounded skip summary (#39); measure the drop in
+    ambiguous skips on a real repo.
+- Outputs: denser, still-precise `calls` edges; `self.method()` / `x.method()`
+  resolve; `get_callers` / `blast_radius` / `trace_calls` recover real edges
+- Testing:
+  - `self.method()` resolves to the enclosing class's method even when other
+    classes define `method` (was ambiguous → now resolved)
+  - `x = Foo(); x.bar()` resolves to `Foo.bar`
+  - Genuinely unknowable receiver stays skipped (no false edge)
+  - Re-index idempotent; no regression on the existing 4.0/#36/#37 cases
+  - Evidence: ambiguous-skip count drops materially on a real repo (e.g. Flask)
+- Note: continuation of #36/#37; improves Features 4.1/4.2/1.6 and every Epic 9
+  analysis. Conservative by design — precision over recall; never a false edge.
+
 ---
 
 ### Epic 8 — Reporting & Agent Integration

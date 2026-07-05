@@ -140,24 +140,91 @@ fn innermost<'a>(syms: &'a [SymRow], candidates: &[usize], line: i64) -> Option<
         })
 }
 
-/// Collect `(line, callee_name)` for every call site in the tree. The callee is
-/// the function identifier (`b()`) or the attribute name (`obj.method()`).
-fn collect_calls(node: Node, src: &[u8], out: &mut Vec<(i64, String)>) {
+/// The receiver of a call, for type-aware resolution (Feature 7.10).
+enum Receiver {
+    /// A bare call `foo()` — no receiver.
+    Bare,
+    /// `self.foo()` / `cls.foo()` — resolves within the enclosing class.
+    SelfCls,
+    /// `obj.foo()` where `obj` is a plain identifier — resolves via `obj`'s type.
+    Local(String),
+    /// A complex receiver (`a.b.foo()`, `f().g()`, `x[0].foo()`) — not inferred.
+    Other,
+}
+
+/// One call site: line, callee name (`b`/`method`), and its receiver.
+struct CallSite {
+    line: i64,
+    callee: String,
+    receiver: Receiver,
+}
+
+/// Collect every call site with its receiver. The callee is the function
+/// identifier (`b()`) or the attribute name (`obj.method()`); the receiver
+/// classifies `obj` so Feature 7.10 can type-resolve method calls.
+fn collect_call_sites(node: Node, src: &[u8], out: &mut Vec<CallSite>) {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if child.kind() == "call" {
             if let Some(func) = child.child_by_field_name("function") {
-                let name = match func.kind() {
-                    "identifier" => Some(node_text(func, src)),
-                    "attribute" => func.child_by_field_name("attribute").map(|a| node_text(a, src)),
-                    _ => None,
+                let (name, receiver) = match func.kind() {
+                    "identifier" => (Some(node_text(func, src)), Receiver::Bare),
+                    "attribute" => {
+                        let attr =
+                            func.child_by_field_name("attribute").map(|a| node_text(a, src));
+                        let recv = match func.child_by_field_name("object") {
+                            Some(obj) if obj.kind() == "identifier" => {
+                                let t = node_text(obj, src);
+                                if t == "self" || t == "cls" {
+                                    Receiver::SelfCls
+                                } else {
+                                    Receiver::Local(t)
+                                }
+                            }
+                            _ => Receiver::Other, // attribute / call / subscript object
+                        };
+                        (attr, recv)
+                    }
+                    _ => (None, Receiver::Other),
                 };
                 if let Some(name) = name {
-                    out.push((child.start_position().row as i64 + 1, name));
+                    out.push(CallSite {
+                        line: child.start_position().row as i64 + 1,
+                        callee: name,
+                        receiver,
+                    });
                 }
             }
         }
-        collect_calls(child, src, out); // recurse: calls nest inside args/bodies
+        collect_call_sites(child, src, out); // recurse: calls nest in args/bodies
+    }
+}
+
+/// Collect trivial `var = ClassName(...)` assignments as `(line, var, class_name)`
+/// — the local-binding type hints used by Feature 7.10's `obj.method()`
+/// resolution. Only a bare-identifier target with a bare-identifier constructor
+/// call is recorded (nothing fancier is inferred).
+fn collect_assignments(node: Node, src: &[u8], out: &mut Vec<(i64, String, String)>) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "assignment" {
+            if let (Some(left), Some(right)) =
+                (child.child_by_field_name("left"), child.child_by_field_name("right"))
+            {
+                if left.kind() == "identifier" && right.kind() == "call" {
+                    if let Some(f) = right.child_by_field_name("function") {
+                        if f.kind() == "identifier" {
+                            out.push((
+                                child.start_position().row as i64 + 1,
+                                node_text(left, src),
+                                node_text(f, src),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        collect_assignments(child, src, out);
     }
 }
 
@@ -482,6 +549,34 @@ pub fn build_edges(db_path: &str) -> PyResult<usize> {
         }
     }
 
+    // --- Feature 7.10: class membership for type-aware method resolution ------
+    // Each method (a `function` nested in a `class` span) maps to its innermost
+    // enclosing class; each class maps its method names to their symbol ids.
+    let classes: Vec<(i64, i64, i64, i64)> = syms
+        .iter()
+        .filter(|s| s.kind == "class")
+        .filter_map(|s| Some((s.id, s.file_id, s.line_start?, s.line_end?)))
+        .collect();
+    let mut method_class: HashMap<i64, i64> = HashMap::new(); // method id -> class id
+    let mut class_methods: HashMap<i64, HashMap<String, i64>> = HashMap::new();
+    for s in syms.iter().filter(|s| s.kind == "function") {
+        if let (Some(fs), Some(fe)) = (s.line_start, s.line_end) {
+            let mut best: Option<(i64, i64)> = None; // (class id, span size) — innermost
+            for &(cid, cfid, cstart, cend) in &classes {
+                if cfid == s.file_id && cstart <= fs && fe <= cend && cid != s.id {
+                    let size = cend - cstart;
+                    if best.map_or(true, |(_, bsize)| size < bsize) {
+                        best = Some((cid, size));
+                    }
+                }
+            }
+            if let Some((cid, _)) = best {
+                method_class.insert(s.id, cid);
+                class_methods.entry(cid).or_default().insert(s.name.clone(), s.id);
+            }
+        }
+    }
+
     // Parse each file up front (before the transaction borrows the connection).
     let mut parser = Parser::new();
     parser
@@ -491,6 +586,7 @@ pub fn build_edges(db_path: &str) -> PyResult<usize> {
     let verbose = crate::verbose();
     let mut skipped_ambiguous = 0usize;
     let mut skipped_unresolved = 0usize;
+    let mut resolved_typed = 0usize; // Feature 7.10: edges recovered by type inference
 
     // --- Import edges (resolved first, so calls can use them) ---------------
     // Each import binding → the definition it names, resolved by the *original*
@@ -537,36 +633,78 @@ pub fn build_edges(db_path: &str) -> PyResult<usize> {
         };
 
         let mut calls = Vec::new();
-        collect_calls(tree.root_node(), source.as_bytes(), &mut calls);
+        collect_call_sites(tree.root_node(), source.as_bytes(), &mut calls);
+        let mut assigns = Vec::new();
+        collect_assignments(tree.root_node(), source.as_bytes(), &mut assigns);
 
         let empty = Vec::new();
         let candidates = by_file.get(file_id).unwrap_or(&empty);
         let file_imports = import_targets.get(file_id);
-        for (line, callee) in calls {
-            let caller = match innermost(&syms, candidates, line) {
+        for cs in calls {
+            let caller = match innermost(&syms, candidates, cs.line) {
                 Some(s) => s,
                 None => continue, // call outside any symbol (module-level) — no src
             };
 
+            // 0. Feature 7.10 — type-aware receiver resolution (never a false
+            //    edge: only a *known* class's own method resolves here).
+            let typed_dst: Option<i64> = match &cs.receiver {
+                // `self.m()` / `cls.m()` → the enclosing class's `m`.
+                Receiver::SelfCls => method_class
+                    .get(&caller.id)
+                    .and_then(|cid| class_methods.get(cid))
+                    .and_then(|m| m.get(&cs.callee))
+                    .copied(),
+                // `obj.m()` → the method of `obj`'s inferred class, when a single
+                // `obj = Class(...)` binding sits in the caller's body.
+                Receiver::Local(var) => {
+                    let cstart = caller.line_start.unwrap_or(cs.line);
+                    let cend = caller.line_end.unwrap_or(cs.line);
+                    let mut cls_names: HashSet<&str> = HashSet::new();
+                    for (aline, avar, acls) in &assigns {
+                        if avar == var && *aline >= cstart && *aline <= cend {
+                            cls_names.insert(acls.as_str());
+                        }
+                    }
+                    if cls_names.len() == 1 {
+                        let cls_name = cls_names.into_iter().next().unwrap();
+                        match resolve_def(&defs_by_name, cls_name, Some(*file_id)) {
+                            Resolution::Resolved(cid) => {
+                                class_methods.get(&cid).and_then(|m| m.get(&cs.callee)).copied()
+                            }
+                            _ => None,
+                        }
+                    } else {
+                        None // 0 or conflicting bindings — don't guess
+                    }
+                }
+                _ => None,
+            };
+            if let Some(dst) = typed_dst {
+                call_edges.push((caller.id, dst));
+                resolved_typed += 1;
+                continue;
+            }
+
             // 1. Import-aware: if this file imports `callee`, use its target.
-            if let Some(dst) = file_imports.and_then(|m| m.get(&callee)) {
+            if let Some(dst) = file_imports.and_then(|m| m.get(&cs.callee)) {
                 call_edges.push((caller.id, *dst));
                 continue;
             }
 
             // 2. Same-file preference, then unique global (issue #36).
-            match resolve_def(&defs_by_name, &callee, Some(*file_id)) {
+            match resolve_def(&defs_by_name, &cs.callee, Some(*file_id)) {
                 Resolution::Resolved(dst) => call_edges.push((caller.id, dst)),
                 Resolution::Ambiguous => {
                     skipped_ambiguous += 1;
                     if verbose {
-                        eprintln!("sylva: ambiguous call reference '{}'; skipping", callee);
+                        eprintln!("sylva: ambiguous call reference '{}'; skipping", cs.callee);
                     }
                 }
                 Resolution::Unresolved => {
                     skipped_unresolved += 1;
                     if verbose {
-                        eprintln!("sylva: unresolved call reference '{}'; skipping", callee);
+                        eprintln!("sylva: unresolved call reference '{}'; skipping", cs.callee);
                     }
                 }
             }
@@ -604,10 +742,13 @@ pub fn build_edges(db_path: &str) -> PyResult<usize> {
         .map_err(|e| PyRuntimeError::new_err(format!("failed to commit edges: {}", e)))?;
 
     // One bounded summary instead of a line per skipped reference (issue #39).
-    if skipped_ambiguous + skipped_unresolved > 0 {
+    // Includes the count recovered by Feature 7.10 type inference.
+    if skipped_ambiguous + skipped_unresolved + resolved_typed > 0 {
         eprintln!(
-            "sylva: build_edges: {} edges; skipped {} ambiguous and {} unresolved reference(s){}",
+            "sylva: build_edges: {} edges ({} via type inference); \
+             skipped {} ambiguous and {} unresolved reference(s){}",
             written,
+            resolved_typed,
             skipped_ambiguous,
             skipped_unresolved,
             if verbose { "" } else { " (set SYLVA_LOG=1 for per-reference detail)" }
