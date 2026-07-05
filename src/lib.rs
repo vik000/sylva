@@ -11,6 +11,7 @@ mod architecture;
 mod coverage;
 mod db;
 mod edges;
+mod entrypoints;
 mod extractor;
 mod hash;
 mod mcp;
@@ -43,5 +44,6 @@ fn sylva(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(edges::trace_calls, m)?)?;
     m.add_function(wrap_pyfunction!(edges::blast_radius, m)?)?;
     m.add_function(wrap_pyfunction!(architecture::get_architecture, m)?)?;
+    m.add_function(wrap_pyfunction!(entrypoints::infer_entrypoints, m)?)?;
     Ok(())
 }
