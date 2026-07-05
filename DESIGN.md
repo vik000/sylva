@@ -67,3 +67,43 @@ trait Extractor {
 
 New languages register themselves in a map at startup. The core pipeline
 never needs to know about specific languages.
+
+---
+
+## Layout decision — layered / block-diagram views (Feature 9.6 spike)
+
+**Question:** the layered renderer (`renderLayered`, used by Features 4.10/4.11/
+4.12 and the global 9.4 system-flow view) places nodes by BFS depth with a fixed
+within-layer order (alphabetical) and **no crossing minimisation**. At scale this
+can tangle. Do we invest in a proper Sugiyama pipeline or adopt an engine
+(dagre / elkjs / Graphviz)?
+
+**Evidence** (benchmarked on Flask, `src/`, 806 symbols / 294 resolved call edges):
+
+- The **actual per-entrypoint views are small, not tangled.** The 9.4
+  system-flow from the inferred primary was **8 nodes / 9 edges** (widest layer
+  4). Static Python call resolution is sparse (many method/dynamic calls don't
+  resolve), so a single entrypoint's reachable subgraph stays modest.
+- **When a layered graph *is* dense, crossing-minimisation is decisive but
+  cheap.** Layering the *whole* call graph (441 nodes, widest layer 312) gave
+  **7338 crossings** with the current alphabetical order; a from-scratch
+  **barycentre** heuristic (a few down/up sweeps) cut that to **522 — a 93%
+  reduction**, with zero new dependencies.
+
+**Decision: keep the from-scratch layout (option a).** A ~50-line barycentre
+crossing-minimisation pass recovers ~93% of the achievable readability while
+preserving the project's constraints (dependency-free, self-contained
+`index.html`, settle-then-freeze Canvas). Bundling **dagre**/**elkjs** (a JS
+layout dependency in the self-contained page) or requiring **Graphviz**
+server-side is not justified by the marginal gain over barycentre.
+
+**Priority: deferred / pull-when-needed.** The current per-entrypoint views are
+small enough that crossings are not yet a real problem, so the barycentre pass is
+filed as a follow-up to add only when a real repo shows a genuinely tangled flow
+— not built speculatively.
+
+**Orthogonal findings (not layout):** the two real readability limits surfaced
+were (1) **entrypoint ambiguity for libraries** — Flask has no single `main`, so
+a CLI command (`shell_command`) is a defensible-but-arbitrary primary; and (2)
+**sparse call resolution** thinning the flows (ties to type-aware resolution,
+issues #36/#45, and import edges #37). Both are separate from layout quality.
