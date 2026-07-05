@@ -5,6 +5,13 @@ grouped by the epics that shaped each line.
 
 ## 4.x — Polyglot analysis, executable MCP & full reporting
 
+- **4.3.0** — **Inheritance edges + centrality-based library rooting.**
+  `class X(Base)` now produces an `inherits` edge (resolved import-aware /
+  same-file / dotted → last segment, never a false edge), rendered in the viz as
+  distinct dashed-amber links and folded into degree, hubs, and blast radius (a
+  subclass depends on its base). And a **library** (no run/web entrypoint) now
+  ranks its public API by **centrality (degree)** — so the central class the code
+  hangs off is designated primary, not an arbitrary deep-reaching function.
 - **4.2.0** — **Runtime call tracer (dynamic tier).** `sylva trace` runs the
   project's tests under a `sys.setprofile` hook and records the **real order**
   functions call each other — the true `test → A → B → C` succession with call

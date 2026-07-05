@@ -78,7 +78,7 @@ def build_graph(db_path):
             "FROM symbols s JOIN files f ON f.id = s.file_id"
         ).fetchall()
         edges = conn.execute(
-            "SELECT src_id, dst_id, kind FROM edges WHERE kind IN ('calls', 'imports')"
+            "SELECT src_id, dst_id, kind FROM edges WHERE kind IN ('calls', 'imports', 'inherits')"
         ).fetchall()
     finally:
         conn.close()
@@ -348,7 +348,7 @@ def module_map(db_path, level="file"):
         # symbol id -> its file id, to map edges to groups.
         sym_file = conn.execute("SELECT id, file_id FROM symbols").fetchall()
         edges = conn.execute(
-            "SELECT src_id, dst_id FROM edges WHERE kind IN ('calls', 'imports')"
+            "SELECT src_id, dst_id FROM edges WHERE kind IN ('calls', 'imports', 'inherits')"
         ).fetchall()
     finally:
         conn.close()
@@ -418,7 +418,7 @@ def neighborhood(db_path, symbol, depth=1):
             "FROM symbols s JOIN files f ON f.id = s.file_id"
         ).fetchall()
         edges = conn.execute(
-            "SELECT src_id, dst_id, kind FROM edges WHERE kind IN ('calls', 'imports')"
+            "SELECT src_id, dst_id, kind FROM edges WHERE kind IN ('calls', 'imports', 'inherits')"
         ).fetchall()
     finally:
         conn.close()

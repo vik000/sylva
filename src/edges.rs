@@ -322,6 +322,46 @@ fn collect_func_params(node: Node, src: &[u8], out: &mut HashMap<i64, HashSet<St
     }
 }
 
+/// Extract a base-class name from a superclass expression: a bare `Base`, a
+/// dotted `pkg.mod.Base` (→ `Base`, resolved by last segment like imports), or a
+/// parameterised `Base[...]` (→ `Base`). Anything else (a call, etc.) is skipped.
+fn class_base_name(node: Node, src: &[u8]) -> Option<String> {
+    match node.kind() {
+        "identifier" => node.utf8_text(src).ok().map(str::to_string),
+        "attribute" => node
+            .child_by_field_name("attribute")
+            .and_then(|a| a.utf8_text(src).ok())
+            .map(str::to_string),
+        "subscript" => node
+            .child_by_field_name("value")
+            .and_then(|v| class_base_name(v, src)),
+        _ => None,
+    }
+}
+
+/// Collect `(class_start_line_1based, base_name)` for every `class X(Base, …)`.
+/// Keyword arguments (`metaclass=…`) are skipped.
+fn collect_class_bases(node: Node, src: &[u8], out: &mut Vec<(i64, String)>) {
+    if node.kind() == "class_definition" {
+        if let Some(supers) = node.child_by_field_name("superclasses") {
+            let line = node.start_position().row as i64 + 1;
+            let mut c = supers.walk();
+            for child in supers.children(&mut c) {
+                if child.kind() == "keyword_argument" || !child.is_named() {
+                    continue;
+                }
+                if let Some(base) = class_base_name(child, src) {
+                    out.push((line, base));
+                }
+            }
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_class_bases(child, src, out);
+    }
+}
+
 /// Collect `(line, callee_name, arg_identifiers)` for every call site — like
 /// `collect_calls`, but also recording each argument that is a bare identifier
 /// (including the value of a `keyword_argument`), which is what parameter
@@ -639,6 +679,15 @@ pub fn build_edges(db_path: &str) -> PyResult<usize> {
         }
     }
 
+    // Inheritance: locate each class symbol by its (file, start line) so a
+    // `class X(Base)` in the source resolves back to X's symbol id.
+    let mut class_at: HashMap<(i64, i64), i64> = HashMap::new();
+    for s in syms.iter().filter(|s| s.kind == "class") {
+        if let Some(ls) = s.line_start {
+            class_at.entry((s.file_id, ls)).or_insert(s.id);
+        }
+    }
+
     // Parse each file up front (before the transaction borrows the connection).
     let mut parser = Parser::new();
     parser
@@ -677,8 +726,9 @@ pub fn build_edges(db_path: &str) -> PyResult<usize> {
         }
     }
 
-    // --- Call edges --------------------------------------------------------
+    // --- Call + inheritance edges ------------------------------------------
     let mut call_edges: Vec<(i64, i64)> = Vec::new();
+    let mut inherit_edges: Vec<(i64, i64)> = Vec::new();
     for (file_id, path) in &files {
         // Dispatch by language: Python (full), TS/JS (name-based, Feature 5.6),
         // or skip (foreign `.rs` per 5.0, unknown extensions).
@@ -795,14 +845,48 @@ pub fn build_edges(db_path: &str) -> PyResult<usize> {
                 }
             }
         }
+
+        // Inheritance edges (Python): `class X(Base)` → X inherits Base. Bases
+        // are resolved import-aware first (so `from m import Base` links across
+        // files), then same-file/unique-global — never a false edge.
+        if matches!(lang, SrcLang::Python) {
+            let mut bases = Vec::new();
+            collect_class_bases(tree.root_node(), source.as_bytes(), &mut bases);
+            for (line, base) in bases {
+                let sub_id = match class_at.get(&(*file_id, line)) {
+                    Some(&id) => id,
+                    None => continue, // no class symbol at that line
+                };
+                let dst = if let Some(&d) = file_imports.and_then(|m| m.get(&base)) {
+                    Some(d)
+                } else {
+                    match resolve_def(&defs_by_name, &base, Some(*file_id)) {
+                        Resolution::Resolved(d) => Some(d),
+                        Resolution::Ambiguous => {
+                            skipped_ambiguous += 1;
+                            None
+                        }
+                        Resolution::Unresolved => {
+                            skipped_unresolved += 1;
+                            None
+                        }
+                    }
+                };
+                if let Some(dst) = dst {
+                    if dst != sub_id {
+                        inherit_edges.push((sub_id, dst));
+                    }
+                }
+            }
+        }
     }
 
-    // --- Write: clear old calls/imports, then insert imports + calls -------
+    // --- Write: clear old calls/imports/inherits, then re-insert -----------
     let tx = conn
         .transaction()
         .map_err(|e| PyRuntimeError::new_err(format!("failed to begin transaction: {}", e)))?;
 
-    tx.execute("DELETE FROM edges WHERE kind IN ('calls', 'imports')", [])
+    tx.execute("DELETE FROM edges WHERE kind IN ('calls', 'imports', 'inherits')", [])
         .map_err(|e| PyRuntimeError::new_err(format!("failed to clear edges: {}", e)))?;
 
     let mut written = 0usize;
@@ -820,6 +904,12 @@ pub fn build_edges(db_path: &str) -> PyResult<usize> {
         for (src_id, dst_id) in &call_edges {
             written += insert
                 .execute(params![src_id, dst_id, "calls"])
+                .map_err(|e| PyRuntimeError::new_err(format!("failed to write edge: {}", e)))?;
+        }
+        // Inheritance edges (subclass → base).
+        for (src_id, dst_id) in &inherit_edges {
+            written += insert
+                .execute(params![src_id, dst_id, "inherits"])
                 .map_err(|e| PyRuntimeError::new_err(format!("failed to write edge: {}", e)))?;
         }
     }
@@ -1064,12 +1154,13 @@ pub fn blast_radius(py: Python<'_>, db_path: &str, symbol: &str) -> PyResult<Py<
         return Ok(PyList::empty(py).unbind());
     }
 
-    // Inbound adjacency over calls + imports: for edge (src -> dst), `src`
-    // depends on `dst`, so record `dst -> (src, kind)`.
+    // Inbound adjacency over calls + imports + inherits: for edge (src -> dst),
+    // `src` depends on `dst`, so record `dst -> (src, kind)`. A subclass depends
+    // on its base, so `inherits` belongs here too (changing a base affects it).
     let mut inbound: HashMap<i64, Vec<(i64, &'static str)>> = HashMap::new();
     {
         let mut stmt = conn
-            .prepare("SELECT src_id, dst_id, kind FROM edges WHERE kind IN ('calls', 'imports')")
+            .prepare("SELECT src_id, dst_id, kind FROM edges WHERE kind IN ('calls', 'imports', 'inherits')")
             .map_err(|e| PyRuntimeError::new_err(format!("failed to read edges: {}", e)))?;
         let rows = stmt
             .query_map([], |r| {
@@ -1079,7 +1170,11 @@ pub fn blast_radius(py: Python<'_>, db_path: &str, symbol: &str) -> PyResult<Py<
         for row in rows {
             let (src, dst, kind) =
                 row.map_err(|e| PyRuntimeError::new_err(format!("failed to read edges: {}", e)))?;
-            let via: &'static str = if kind == "imports" { "imports" } else { "calls" };
+            let via: &'static str = match kind.as_str() {
+                "imports" => "imports",
+                "inherits" => "inherits",
+                _ => "calls",
+            };
             inbound.entry(dst).or_default().push((src, via));
         }
     }

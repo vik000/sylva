@@ -55,13 +55,13 @@ pub fn get_architecture(py: Python<'_>, db_path: &str, hub_limit: usize) -> PyRe
             .map_err(|e| PyRuntimeError::new_err(format!("failed to read symbols: {}", e)))?
     };
 
-    // Edges: accumulate degree (calls + imports, both directions) and the set of
-    // symbols with an inbound `calls` edge.
+    // Edges: accumulate degree (calls + imports + inherits, both directions) and
+    // the set of symbols with an inbound `calls` edge.
     let mut degree: HashMap<i64, i64> = HashMap::new();
     let mut has_inbound_call: HashSet<i64> = HashSet::new();
     {
         let mut stmt = conn
-            .prepare("SELECT src_id, dst_id, kind FROM edges WHERE kind IN ('calls', 'imports')")
+            .prepare("SELECT src_id, dst_id, kind FROM edges WHERE kind IN ('calls', 'imports', 'inherits')")
             .map_err(|e| PyRuntimeError::new_err(format!("failed to read edges: {}", e)))?;
         let rows = stmt
             .query_map([], |r| {

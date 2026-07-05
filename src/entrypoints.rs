@@ -316,6 +316,25 @@ pub fn infer_entrypoints(py: Python<'_>, db_path: &str) -> PyResult<Py<PyList>> 
             .map_err(|e| PyRuntimeError::new_err(format!("failed to read edges: {}", e)))?
     };
 
+    // Total degree over calls + imports + inherits (both directions) — the
+    // centrality signal used to rank a *library*'s public API, so the central
+    // class (many inbound uses/subclasses) is designated primary, not an
+    // arbitrary deep-reaching function.
+    let mut degree: HashMap<i64, i64> = HashMap::new();
+    {
+        let mut stmt = conn
+            .prepare("SELECT src_id, dst_id FROM edges WHERE kind IN ('calls', 'imports', 'inherits')")
+            .map_err(|e| PyRuntimeError::new_err(format!("failed to read edges: {}", e)))?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))
+            .map_err(|e| PyRuntimeError::new_err(format!("failed to read edges: {}", e)))?;
+        for row in rows {
+            let (s, d) = row.map_err(|e| PyRuntimeError::new_err(format!("failed to read edges: {}", e)))?;
+            *degree.entry(s).or_insert(0) += 1;
+            *degree.entry(d).or_insert(0) += 1;
+        }
+    }
+
     let list = PyList::empty(py);
     if syms.is_empty() {
         return Ok(list.unbind()); // empty graph -> empty
@@ -504,6 +523,7 @@ pub fn infer_entrypoints(py: Python<'_>, db_path: &str) -> PyResult<Py<PyList>> 
 
     // Rank: markers first, then by reach desc, then name asc. Candidates are
     // already definition symbols (roots / markers / def fallback).
+    let deg = |id: i64| -> i64 { *degree.get(&id).unwrap_or(&0) };
     let mut ranked: Vec<(i64, usize, bool)> = candidates
         .iter()
         .filter(|&&id| detail.contains_key(&id))
@@ -512,9 +532,19 @@ pub fn infer_entrypoints(py: Python<'_>, db_path: &str) -> PyResult<Py<PyList>> 
     ranked.sort_by(|a, b| {
         let name_a = detail.get(&a.0).map(|s| s.name.as_str()).unwrap_or("");
         let name_b = detail.get(&b.0).map(|s| s.name.as_str()).unwrap_or("");
-        b.2.cmp(&a.2) // is_marker desc
-            .then(b.1.cmp(&a.1)) // reachable desc
-            .then(name_a.cmp(name_b)) // name asc
+        let base = b.2.cmp(&a.2); // is_marker desc
+        // A library has no single "start": rank its public API by centrality
+        // (degree), so the central class wins. An application ranks by reach
+        // from its markers (the real program start reaches the most).
+        if is_library {
+            base.then(deg(b.0).cmp(&deg(a.0))) // degree desc (centrality)
+                .then(b.1.cmp(&a.1)) // reachable desc
+                .then(name_a.cmp(name_b))
+        } else {
+            base.then(b.1.cmp(&a.1)) // reachable desc
+                .then(deg(b.0).cmp(&deg(a.0)))
+                .then(name_a.cmp(name_b))
+        }
     });
 
     for (rank, (id, reach, is_marker)) in ranked.iter().enumerate() {
@@ -524,6 +554,7 @@ pub fn infer_entrypoints(py: Python<'_>, db_path: &str) -> PyResult<Py<PyList>> 
         d.set_item("file", &s.path)?;
         d.set_item("line", s.line)?;
         d.set_item("reachable", *reach)?;
+        d.set_item("degree", deg(*id))?; // centrality (used to rank libraries)
         d.set_item("is_marker", *is_marker)?;
         d.set_item("marker_kind", markers.get(id).copied())?;
         d.set_item("rank", rank + 1)?;

@@ -82,24 +82,24 @@ class TestRankingAndPrimary:
         assert primaries[0]["rank"] == 1
         assert primaries[0]["reachable"] == 3  # a, b, c
 
-    def test_reachability_ranking_without_markers(self, tmp_path):
+    def test_library_ranks_by_centrality(self, tmp_path):
         db = _init(tmp_path)
-        # Two independent roots, no __main__/main markers: deeper one ranks first.
+        # A library (no main/framework) has no single "start": its public API is
+        # ranked by centrality (degree), so the most-connected symbol — the hub
+        # everything hangs off — is primary, not an arbitrary deep-reaching leaf.
         src = (
-            "def leaf():\n    return 0\n\n"
-            "def mid():\n    return leaf()\n\n"
-            "def big():\n    return mid()\n\n"       # reaches mid, leaf (2)
-            "def small():\n    return 1\n"           # reaches nothing (0)
+            "class Core:\n    pass\n\n"
+            "def a():\n    return Core()\n\n"      # a -> Core
+            "def b():\n    return Core()\n\n"      # b -> Core
+            "def c():\n    return Core()\n"        # c -> Core
         )
         _index(db, tmp_path / "m.py", src)
         sylva.build_edges(str(db))
         result = _entries(db)
-        # 9.7: a library (no main/framework) marks its public API; the deeper
-        # function still ranks first (by reachability, among the markers).
         assert all(e["marker_kind"] == "public_api" for e in result)
-        ranked = [e["symbol"] for e in result]
-        assert ranked.index("big") < ranked.index("small")
-        assert _by_name(result)["big"]["primary"] is True
+        assert all(e["is_library"] for e in result)
+        # Core has inbound calls from a, b, c -> highest degree -> primary.
+        assert _by_name(result)["Core"]["primary"] is True
 
 
 class TestEdgeCases:

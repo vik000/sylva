@@ -97,6 +97,7 @@
       <div class="toggle"><input type="checkbox" id="k-class" checked><span class="dot" style="background:#f2a65a"></span>classes</div>
       <div class="toggle"><input type="checkbox" id="k-import" checked><span class="dot" style="background:#7ee787"></span>imports</div>
       <div class="toggle"><input type="checkbox" id="k-foreign" checked><span class="dot" style="background:#e3a008;border-radius:2px"></span>foreign modules (opaque)</div>
+      <div class="toggle" style="pointer-events:none"><span style="width:14px;border-top:2px dashed #e3a008;display:inline-block"></span>inheritance (subclass → base)</div>
     </div>
     <div class="field">
       <label>Overlay</label>
@@ -313,8 +314,16 @@ function draw() {
     const a = BY_ID.get(l.source), b = BY_ID.get(l.target);
     if (!a || !b || !visible(a) || !visible(b)) continue;
     const hot = selected && (l.source === selected.id || l.target === selected.id);
-    ctx.strokeStyle = hot ? "rgba(110,168,254,.9)" : "rgba(120,130,150,.18)";
+    // Inheritance edges (subclass → base) are drawn amber + dashed so class
+    // hierarchies read distinctly from call/import edges.
+    if (l.kind === "inherits") {
+      ctx.setLineDash([5 / view.k, 4 / view.k]);
+      ctx.strokeStyle = hot ? "rgba(227,160,8,.95)" : "rgba(227,160,8,.5)";
+    } else {
+      ctx.strokeStyle = hot ? "rgba(110,168,254,.9)" : "rgba(120,130,150,.18)";
+    }
     ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    ctx.setLineDash([]);
   }
   for (const n of NODES) {
     if (!visible(n)) continue;
