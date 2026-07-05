@@ -20,7 +20,6 @@ visualisation/
 .codemcp/
 
 # Claude Code / local dev tooling (not part of the published project)
-/CLAUDE.md
 /.claude/
 /setup_github.sh
 /create_issues_only.sh
