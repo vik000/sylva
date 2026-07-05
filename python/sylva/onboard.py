@@ -16,56 +16,56 @@ skill; it is not invoked by this deterministic CLI.
 """
 
 import os
-import pathlib
 
 import sylva
 
+_LANG_BY_EXT = {
+    "py": "python", "pyi": "python",
+    "rs": "rust",
+    "ts": "typescript", "tsx": "typescript", "mts": "typescript", "cts": "typescript",
+    "js": "javascript", "jsx": "javascript", "mjs": "javascript", "cjs": "javascript",
+}
 
-def _walk_foreign(root):
-    """Yield foreign-language source files to black-box (Feature 5.0).
 
-    Currently Rust (`.rs`); build artefacts (`target/`) and hidden dirs skipped.
-    """
-    for p in pathlib.Path(root).rglob("*.rs"):
-        if "target" in p.parts or any(seg.startswith(".") for seg in p.parts):
-            continue
-        yield str(p)
+def _lang_of(path):
+    return _LANG_BY_EXT.get(os.path.splitext(path)[1].lstrip(".").lower(), "other")
 
 
 def index_codebase(root, db_path, log=False):
     """Index `root` into the graph at `db_path`; return a summary dict.
 
-    Walks Python files (symbols) and foreign Rust files (black-box exports),
-    writes them, then builds call/import edges and static data-flow. Unreadable
-    files are skipped, not fatal. Raises NotADirectoryError if `root` is not a
-    directory.
+    Walks every supported-language file (Feature 5.5) and routes by extension:
+    `.rs` is black-boxed by its export surface (Feature 5.0), everything else is
+    fully parsed via `extract_symbols` (dispatched by the 5.1 trait). Then builds
+    call/import edges and static data-flow (both Python-only for now — non-Python
+    symbols have no edges until Feature 5.6). Unreadable files are skipped, not
+    fatal. Raises NotADirectoryError if `root` is not a directory.
     """
     if not os.path.isdir(root):
         raise NotADirectoryError(root)
     os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
     sylva.init_db(db_path)
 
-    files = sylva.walk_python_files(root)
-    symbols = 0
-    skipped = 0
+    files = sylva.walk_source_files(root)
+    symbols, foreign, skipped = 0, 0, 0
+    by_language = {}
     for path in files:
         try:
-            symbols += sylva.write_symbols(db_path, path, sylva.extract_symbols(path))
+            if path.endswith(".rs"):
+                exports = sylva.extract_foreign_exports(path)  # black-box (5.0)
+                if exports:
+                    sylva.write_symbols(db_path, path, exports)
+                    foreign += len(exports)
+                    by_language["rust"] = by_language.get("rust", 0) + len(exports)
+            else:
+                n = sylva.write_symbols(db_path, path, sylva.extract_symbols(path))
+                symbols += n
+                lang = _lang_of(path)
+                by_language[lang] = by_language.get(lang, 0) + n
         except Exception as e:  # unreadable / undecodable — skip, don't abort
             skipped += 1
             if log:
                 print(f"sylva: skipping '{path}': {e}")
-
-    foreign = 0
-    for path in _walk_foreign(root):
-        try:
-            exports = sylva.extract_foreign_exports(path)
-            if exports:
-                sylva.write_symbols(db_path, path, exports)
-                foreign += len(exports)
-        except Exception as e:
-            if log:
-                print(f"sylva: skipping foreign '{path}': {e}")
 
     edges = sylva.build_edges(db_path)
     flows = sylva.build_dataflow(db_path)
@@ -76,6 +76,7 @@ def index_codebase(root, db_path, log=False):
         "foreign": foreign,
         "edges": edges,
         "flows": flows,
+        "by_language": by_language,
     }
 
 

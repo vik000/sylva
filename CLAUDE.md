@@ -663,6 +663,37 @@ Never: silent corruption, undefined behaviour, unlogged failures.
   - Negative: unknown language hint raises ValueError
   - Error control: missing coverage file raises FileNotFoundError
 
+#### Feature 5.5 — Multi-language pipeline walker (issue #70)
+- Description: Sylva can *extract* Python/Rust/TS/JS (5.1–5.3), but the analyze
+  pipeline still walks only `.py` (+ foreign `.rs`), so `analyze`/`onboard` index
+  nothing on a TS/JS repo. Generalise the indexer to walk **all supported
+  extensions** and dispatch through `extract_symbols`, so the extractors are
+  actually reached.
+- Inputs: repo root, db path
+- Process:
+  - New gitignore-aware `walk_source_files(root)` (Rust, `ignore` crate) that
+    returns files whose extension is in the union of the registry's extractor
+    extensions (`extractor::supported_extensions()`).
+  - `index_codebase` (onboard.py) walks those and routes by extension:
+    **`.rs` → `extract_foreign_exports`** (black-box export surface, per 5.0 —
+    the decided policy; gitignore-aware now, replacing the ad-hoc `rglob`);
+    **everything else → `extract_symbols`** (full parse, dispatched by the 5.1
+    trait). Report per-language symbol counts in the summary.
+  - `build_dataflow` also gains the `.py`-only guard `build_edges` already has
+    (Python-specific analysis; skip non-Python files cleanly).
+- Outputs: TS/JS (and Python) symbols indexed from `analyze`/`onboard`; `.rs`
+  still black-boxed; a per-language breakdown in the summary
+- Testing:
+  - A TS-only repo → its functions/classes/interfaces are in the graph
+  - A mixed Python+TS(+Rust) repo indexes each: Python/TS full-parsed, Rust
+    black-boxed
+  - `.gitignore` respected; the Python-only path is unchanged (regression)
+  - Per-language counts reported
+- Note: **symbols only** — non-Python files get no `calls`/`imports` edges yet
+  (that is Feature 5.6 / #71; `build_edges` still parses Python only). Decided
+  policy: `.rs` stays black-boxed (matches 5.0/5.2). Unblocks true polyglot
+  analysis together with 5.6.
+
 ---
 
 ### Epic 6 — Semantic Layer

@@ -33,6 +33,9 @@ def _analyze(root, db_path):
         f"{idx['symbols']} symbols, {idx['edges']} relationships, "
         f"{idx['flows']} data-flow(s){fnote} -> {db_path}"
     )
+    if idx.get("by_language"):
+        langs = ", ".join(f"{k}: {v}" for k, v in sorted(idx["by_language"].items()))
+        print(f"sylva: by language — {langs}")
     print(f"sylva: now run  sylva serve-ui --db {db_path}")
     return 0
 

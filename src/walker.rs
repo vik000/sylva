@@ -113,3 +113,66 @@ pub fn walk_python_files(root: &str, extra_ignores: Option<Vec<String>>) -> PyRe
     results.sort();
     Ok(results)
 }
+
+/// Walk `root` and return every file of a **supported language** (any extension
+/// registered by an extractor — `.py`, `.rs`, `.ts`, `.js`, …), gitignore-aware.
+/// The multi-language pipeline walker for Feature 5.5. Same ignore semantics and
+/// error handling as `walk_python_files`; sorted for deterministic output.
+#[pyfunction]
+#[pyo3(signature = (root, extra_ignores=None))]
+pub fn walk_source_files(root: &str, extra_ignores: Option<Vec<String>>) -> PyResult<Vec<String>> {
+    let root_path = Path::new(root);
+    if !root_path.exists() {
+        return Err(PyFileNotFoundError::new_err(format!(
+            "root path does not exist: '{}'",
+            root
+        )));
+    }
+
+    let extra = build_extra_matcher(root_path, &extra_ignores)?;
+    let supported = crate::extractor::supported_extensions();
+
+    let mut builder = WalkBuilder::new(root_path);
+    builder
+        .require_git(false)
+        .git_global(false)
+        .parents(false)
+        .add_custom_ignore_filename(".codemcpignore");
+
+    let mut results: Vec<String> = Vec::new();
+    for entry in builder.build() {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) => {
+                eprintln!("sylva: skipping unreadable path during walk: {}", err);
+                continue;
+            }
+        };
+        let path = entry.path();
+
+        let is_source = path.is_file()
+            && path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map_or(false, |ext| supported.contains(&ext));
+        if !is_source {
+            continue;
+        }
+        // Defensively skip build / vendor trees even when not gitignored — you
+        // never want to index `node_modules/` (JS) or `target/` (Rust).
+        if path.components().any(|c| {
+            matches!(c.as_os_str().to_str(), Some("node_modules") | Some("target"))
+        }) {
+            continue;
+        }
+        if let Some(matcher) = &extra {
+            if matcher.matched_path_or_any_parents(path, false).is_ignore() {
+                continue;
+            }
+        }
+        results.push(path.to_string_lossy().into_owned());
+    }
+
+    results.sort();
+    Ok(results)
+}

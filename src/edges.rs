@@ -402,6 +402,10 @@ pub fn build_dataflow(db_path: &str) -> PyResult<usize> {
     let mut rows: Vec<(i64, i64, String)> = Vec::new();
 
     for (file_id, path) in &files {
+        // Data-flow is Python-specific; skip non-Python files (Feature 5.5).
+        if !path.ends_with(".py") {
+            continue;
+        }
         let source = match std::fs::read_to_string(path) {
             Ok(s) => s,
             Err(_) => continue, // unreadable — skip (build_edges already reports)

@@ -489,6 +489,20 @@ fn extractor_for_ext(ext: &str) -> Option<Box<dyn Extractor>> {
     registry().into_iter().find(|e| e.extensions().contains(&ext))
 }
 
+/// The deduped union of all registered extractor extensions — used by the
+/// multi-language pipeline walker (Feature 5.5).
+pub(crate) fn supported_extensions() -> Vec<&'static str> {
+    let mut exts: Vec<&'static str> = Vec::new();
+    for e in registry() {
+        for &x in e.extensions() {
+            if !exts.contains(&x) {
+                exts.push(x);
+            }
+        }
+    }
+    exts
+}
+
 /// The languages Sylva can fully extract, e.g. `["python"]`.
 #[pyfunction]
 pub fn list_languages(py: Python<'_>) -> PyResult<Py<PyList>> {
