@@ -436,6 +436,21 @@ def neighborhood(db_path, symbol, depth=1):
     return {"center": symbol, "depth": depth, "nodes": nodes, "edges": sub_edges}
 
 
+def entrypoints(db_path):
+    """Feature 9.5 — the ranked inferred entrypoints (Feature 9.1) for the
+    sidebar navigator, so the structural views are launchable in one click.
+
+    Thin reuse of the Rust `infer_entrypoints`: a ranked list of
+    `{symbol, file, line, reachable, is_marker, marker_kind, rank, primary}`.
+    Raises FileNotFoundError if the database does not exist.
+    """
+    if not os.path.exists(db_path):
+        raise FileNotFoundError(f"database not found: {db_path}")
+    import sylva  # lazy: the inference lives in Rust (9.1)
+
+    return sylva.infer_entrypoints(db_path)
+
+
 def architecture(db_path):
     """Feature 4.8 — the architecture summary that drives the sidebar navigator.
 

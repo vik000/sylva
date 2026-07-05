@@ -23,6 +23,7 @@ from .export import (
     architecture,
     build_graph,
     data_flow,
+    entrypoints,
     exec_path,
     export_graph_json,
     flow_layout,
@@ -57,6 +58,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._serve_exec()
         elif route == "/architecture":
             self._serve_architecture()
+        elif route == "/entrypoints":
+            self._serve_entrypoints()
         elif route == "/neighborhood":
             self._serve_neighborhood()
         elif route == "/architecture-map":
@@ -131,6 +134,14 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._send_json(500, {"error": str(e)})
         except Exception as e:
             self._send_json(500, {"error": f"failed to build architecture: {e}"})
+
+    def _serve_entrypoints(self):
+        try:
+            self._send_json(200, entrypoints(self._db_path))
+        except FileNotFoundError as e:
+            self._send_json(500, {"error": str(e)})
+        except Exception as e:
+            self._send_json(500, {"error": f"failed to infer entrypoints: {e}"})
 
     def _serve_neighborhood(self):
         q = parse_qs(urlparse(self.path).query)

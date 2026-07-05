@@ -70,6 +70,8 @@
     </div>
     <div class="field" id="nav">
       <label>Navigator</label>
+      <div class="navhead">Entrypoints (inferred) — click to flow</div>
+      <div id="nav-flows" class="navlist"><div class="row">loading…</div></div>
       <div class="navhead">Entry points</div>
       <div id="nav-entries" class="navlist"><div class="row">loading…</div></div>
       <div class="navhead">Hubs</div>
@@ -214,6 +216,7 @@ async function poll() {
       const g = await (await fetch("graph.json")).json();
       applyGraph(g, true);
       loadArchitecture();
+      loadEntrypoints();
       if (moduleView && mapLevel === "package") applyModuleMap();  // refresh coarser map
     }
   } catch (e) { /* transient; try again next tick */ }
@@ -535,6 +538,34 @@ async function loadArchitecture() {
   renderNavList("nav-hubs", arch.hubs, "No hubs.");
 }
 
+// Feature 9.5 — the ranked inferred entrypoints (9.1); clicking one launches its
+// layered flow (9.4/4.10), so the structural views are discoverable, not buried.
+async function loadEntrypoints() {
+  let eps;
+  try { eps = await (await fetch("entrypoints")).json(); }
+  catch (e) { return; }
+  const el = document.getElementById("nav-flows");
+  el.innerHTML = "";
+  if (!eps || eps.error || !eps.length) {
+    el.innerHTML = `<div class="row">No entrypoints.</div>`;
+    return;
+  }
+  for (const e of eps.slice(0, 20)) {  // top-ranked; primary first
+    const row = document.createElement("div");
+    row.className = "navitem";
+    row.title = (e.file || "") + (e.marker_kind ? " · " + e.marker_kind : "") +
+      (e.reachable != null ? " · reaches " + e.reachable : "");
+    if (e.primary) {
+      const b = document.createElement("span");
+      b.className = "deg"; b.textContent = "primary";
+      row.appendChild(b);
+    }
+    row.appendChild(document.createTextNode(e.symbol));
+    row.onclick = () => enterFlow(e.symbol);  // launch the flow, not just focus
+    el.appendChild(row);
+  }
+}
+
 // --- Feature 4.9: focus / neighbourhood mode with depth control ----------- //
 async function fetchNeighborhood(name, depth) {
   try {
@@ -655,6 +686,7 @@ function updateCovNote() {
 resize();
 load();
 loadArchitecture();
+loadEntrypoints();
 </script>
 </body>
 </html>

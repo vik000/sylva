@@ -1069,6 +1069,35 @@ Precedes Epic 10 (skills). (GitHub milestone "Epic 9 …".)
   9.6 (the Sugiyama-vs-dagre/ELK spike); do that alongside if the layered output
   looks tangled. Sidebar launch is Feature 9.5.
 
+#### Feature 9.5 — Sidebar navigator: launch flows from the navigator (issue #59)
+- Description: The Epic 9 structural features (inferred entrypoints 9.1, system
+  flow 9.4, spine 9.2) exist but aren't *discoverable* — the sidebar navigator
+  (4.8) lists architecture entry points/hubs and only *focuses* them. Make the
+  ranked, inferred entrypoints first-class launch points so the structural views
+  are reachable in one click instead of buried behind node selection.
+- Inputs: db path (reuses `/system-flow`, `infer_entrypoints`; add an endpoint
+  for the ranked entrypoints)
+- Process (viz layer — Python `viz/` + `index.html`, no Rust change):
+  - Serve Feature 9.1's ranked entrypoints (an `/entrypoints` endpoint wrapping
+    `sylva.infer_entrypoints`), carrying `primary`, `rank`, `marker_kind`,
+    `reachable`.
+  - UI: a sidebar **"Entrypoints"** section listing them ranked (primary badged,
+    marker_kind shown); clicking one **launches its flow** (reuse 4.10
+    `enterFlow`), not just focus. Surface the primary prominently as the default
+    system-flow root.
+  - Reuse the 4.8 navigator container pattern; the existing `/architecture`
+    hubs/entry lists remain (this adds the *inferred, ranked* entrypoints +
+    click-to-flow).
+- Outputs: sidebar shows ranked inferred entrypoints; clicking flows one;
+  primary is the obvious starting point → the structural work is navigable
+- Testing:
+  - `/entrypoints` returns the ranked list with `primary`/`rank`/`marker_kind`
+  - Edge: empty graph → empty list (no crash); missing db → error response
+  - UI: the sidebar contains the entrypoints container + a launch handler wired
+    to the flow view
+- Note: pure reuse of 9.1 (`infer_entrypoints`) + 9.4/4.10 (flow); no Rust
+  change. The discoverability capstone for the Epic 9 structural features.
+
 #### Feature 9.6 — Layout spike: from-scratch Sugiyama vs dagre/ELK (issue #60)
 - **This is a SPIKE / evaluation, not a code feature.** Deliverable = a written
   recommendation (+ an optional throwaway prototype), not shipped/tested code. It
