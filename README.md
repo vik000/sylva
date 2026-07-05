@@ -17,10 +17,10 @@ From that graph it can:
 It's built for **understanding an unfamiliar codebase fast** — for humans and for
 agents.
 
-> **Status:** production-ready on **Python** codebases, with **cross-language
-> boundaries** (Rust/PyO3 native modules) represented as black boxes. All
-> analysis is **deterministic** — Sylva never runs an LLM itself; it *enables*
-> one.
+> **Status:** production-ready. **Polyglot** — full parsing for **Python,
+> TypeScript, and JavaScript**, with **cross-language boundaries** (Rust/PyO3
+> native modules) represented as black boxes. All analysis is **deterministic** —
+> Sylva never runs an LLM itself; it *enables* one.
 
 ---
 
@@ -62,8 +62,12 @@ From the graph alone, deterministically:
 - **Blast radius** — everything that would break if a symbol changed.
 - **Test coverage** — overlay red→green, find untested code, map tests to the
   code they exercise.
-- **Cross-language boundaries** — calls from Python into a Rust/PyO3 (or C)
-  extension, shown as opaque "black box" nodes instead of vanishing.
+- **Multiple languages** — **Python, TypeScript, and JavaScript** are fully
+  parsed (symbols *and* call edges) in one graph; **Rust/PyO3 (or C)** modules
+  are shown as opaque "black box" nodes by their export surface instead of
+  vanishing.
+- **A health report** — architecture, coverage gaps, change-risk (blast radius
+  of the hubs), and structural gaps (orphans), as a diffable `REPORT.md`.
 
 ---
 
@@ -148,6 +152,24 @@ MCP client config. The assistant can then call these tools:
 The server speaks the MCP handshake (`initialize` / `tools/list` / `tools/call`)
 and plain JSON-RPC.
 
+### Let an agent *call* your code
+
+`init-mcp` gives an assistant **query** access to the graph. To let it **execute**
+selected functions from the repo, use an **allowlist** — nothing is exposed by
+default:
+
+```bash
+# .codemcp/expose.toml
+functions = ["mypkg.api:create_user", "mypkg.api:delete_user"]
+modules   = ["mypkg.public"]         # shorthand: a module's public functions
+
+sylva expose --root .                # writes a standalone, reviewable MCP server
+```
+
+Sylva only *generates* the server file (its tool schemas come from each
+function's live signature); **you review and run it** — Sylva executes nothing.
+Language-neutral by design (Python execution backend first).
+
 ---
 
 ## Command reference
@@ -159,7 +181,9 @@ and plain JSON-RPC.
 | `sylva serve-ui [--port N] [--no-open]` | Interactive graph in a browser |
 | `sylva brief [--out SYLVA.md]` | Write the project instruction brief |
 | `sylva diagram [--out DIAGRAMS.md]` | Write Mermaid workflow diagrams |
-| `sylva init-mcp [--out .codemcp]` | Write a per-project MCP scaffold |
+| `sylva report [--out report]` | Write a **health/risk report** (`REPORT.md` + `report.json`) |
+| `sylva init-mcp [--out .codemcp]` | Write a per-project MCP scaffold (query access) |
+| `sylva expose --root <dir>` | Generate an MCP server exposing **allowlisted** repo functions (execute access) |
 | `sylva serve` | Run the MCP server over stdio (for AI tools) |
 | `sylva export-viz [--out <dir>]` | Write `visualisation/graph.json` |
 
@@ -250,9 +274,10 @@ actually exercised as a block diagram.
 
 - **Deterministic, no LLM.** All of Sylva's analysis is mechanical and
   reproducible — same graph, same output. It's built to *feed* an LLM, not be one.
-- **Languages.** Full parsing is Python today; Rust/PyO3 (and C) modules are
-  represented by their **export surface** as black boxes. More full extractors
-  are planned.
+- **Languages.** **Python, TypeScript, and JavaScript** are fully parsed
+  (symbols and call edges). **Rust/PyO3 (and C)** modules are represented by
+  their **export surface** as black boxes, so cross-language calls stay visible.
+  (TS/JS import-aware resolution is a planned refinement.)
 - **Edges are precise, not exhaustive.** Calls/imports resolve by name with
   same-file, import-aware, and light **type-aware** (`self.method()`,
   `x = Foo(); x.m()`) disambiguation. Sylva never invents a wrong link;

@@ -3,6 +3,28 @@
 All notable changes to Sylva. Versions follow semver; the history below is
 grouped by the epics that shaped each line.
 
+## 4.x — Polyglot analysis, executable MCP & full reporting
+
+The 4.0 major marks Sylva going **beyond Python**: TypeScript/JavaScript are now
+fully parsed alongside Python (Rust stays a black box), an agent can be granted
+**execute** access to selected functions, and the analysis ships a **health/risk
+report**.
+
+- **4.0.0** — **Detailed analysis report** (`sylva report` → `report/REPORT.md` +
+  `report.json`, Feature 8.1): architecture, coverage gaps, change-risk (blast
+  radius of the hubs) and structural gaps (orphans) — deterministic and diffable.
+  Major bump consolidating the polyglot + executable-MCP line below.
+- **3.22.0** — accessible-function badges + an "accessible only" filter in the
+  viz (Feature 8.3) — see the agent-callable surface at a glance.
+- **3.21.0** — entrypoint inference for **libraries** (public API surface, 9.7).
+- **3.20.0 / 3.19.0** — TypeScript/JavaScript **call-edge resolution** + the
+  multi-language pipeline walker (5.6 / 5.5): TS/JS repos now get real graphs.
+- **3.18.0** — coverage support for Rust/TS (tarpaulin / Istanbul LCOV, 5.4).
+- **3.17.0 / 3.15.0** — **TypeScript/JavaScript** and **Rust** extractors (5.3 / 5.2).
+- **3.16.0** — `sylva expose`: turn **allowlisted** repo functions into an
+  executable MCP server (Feature 8.5) — opt-in; Sylva generates, you review & run.
+- **3.14.0** — pluggable language-extractor **trait** (5.1) — the polyglot foundation.
+
 ## 3.x — Deterministic understanding, agent access & skills
 
 The 3.0 line makes Sylva a tool that *explains* a codebase, not just maps it —
