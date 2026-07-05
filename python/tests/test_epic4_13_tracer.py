@@ -210,3 +210,8 @@ class TestAsset:
         # Layered views (flow / exec / system-flow / data-flow) also draw boxes.
         assert "function drawLayered" in html
         assert "if (flowMode) return drawLayered" in html
+        # UX: land on the high-level diagram (not the force graph); logic paths
+        # and traces sit above the collapsed "Explore" section.
+        assert "load().then(() => enterSystemFlow())" in html
+        assert html.index('id="nav-tests"') < html.index('details class="more"')
+        assert html.index('details class="more"') < html.index('id="filter"')

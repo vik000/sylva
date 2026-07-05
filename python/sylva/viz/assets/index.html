@@ -43,6 +43,14 @@
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .navitem:hover { background: #1f2430; color: var(--ink); }
   .navitem .deg { color: var(--accent); float: right; margin-left: 8px; }
+  #system-flow { width: 100%; font-weight: 600; background: #1b2436; border-color: var(--accent); }
+  details.more { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 8px; }
+  details.more > summary { cursor: pointer; color: var(--muted); font-size: 11px; font-weight: 600;
+    list-style: none; user-select: none; padding: 3px 0; }
+  details.more > summary::-webkit-details-marker { display: none; }
+  details.more > summary::before { content: "▸ "; }
+  details.more[open] > summary::before { content: "▾ "; }
+  details.more[open] > summary { color: var(--ink); }
 </style>
 </head>
 <body>
@@ -61,52 +69,59 @@
       <div id="focus-crumb" class="hint" style="margin-top:6px"></div>
       <button id="focus-back">← Exit focus</button>
     </div>
+    <!-- Primary: the high-level diagram + the two path views, up top. -->
     <div class="field">
-      <button id="system-flow" title="Whole-project block diagram, rooted at the inferred entrypoint">▤ System flow (whole project)</button>
+      <button id="system-flow" title="Whole-project block diagram, rooted at the inferred entrypoint">▤ High-level diagram</button>
     </div>
     <div class="field">
-      <label>Filter by name / file</label>
-      <input id="filter" type="text" placeholder="e.g. util or src/foo.py" />
-    </div>
-    <div class="field" id="nav">
-      <label>Navigator</label>
-      <div class="navhead">Entrypoints (inferred) — click to flow</div>
-      <div id="nav-flows" class="navlist"><div class="row">loading…</div></div>
-      <div class="navhead">Entry points</div>
-      <div id="nav-entries" class="navlist"><div class="row">loading…</div></div>
-      <div class="navhead">Hubs</div>
-      <div id="nav-hubs" class="navlist"><div class="row">loading…</div></div>
-      <div class="navhead">Logic paths (from tests) — click to trace</div>
+      <div class="navhead">Logic paths (from tests) — click for boxes</div>
       <div id="nav-tests" class="navlist"><div class="row">loading…</div></div>
       <div class="navhead">Execution traces (real order) — click for boxes</div>
       <div id="nav-traces" class="navlist"><div class="row">loading…</div></div>
     </div>
-    <div class="field">
-      <label>View</label>
-      <div class="toggle"><input type="checkbox" id="module-view"><span class="dot" style="background:#a371f7"></span>module view (collapse to files)</div>
-      <div class="toggle" id="map-level-wrap" style="display:none">group:
-        <select id="map-level">
-          <option value="file">by file</option>
-          <option value="package">by package (directory)</option>
-        </select>
+
+    <!-- Secondary: everything else, tucked away. -->
+    <details class="more">
+      <summary>Explore &amp; filters</summary>
+      <div class="field">
+        <label>Filter by name / file</label>
+        <input id="filter" type="text" placeholder="e.g. util or src/foo.py" />
       </div>
-    </div>
-    <div class="field">
-      <label>Show</label>
-      <div class="toggle"><input type="checkbox" id="k-function" checked><span class="dot" style="background:#6ea8fe"></span>functions</div>
-      <div class="toggle"><input type="checkbox" id="k-class" checked><span class="dot" style="background:#f2a65a"></span>classes</div>
-      <div class="toggle"><input type="checkbox" id="k-import" checked><span class="dot" style="background:#7ee787"></span>imports</div>
-      <div class="toggle"><input type="checkbox" id="k-foreign" checked><span class="dot" style="background:#e3a008;border-radius:2px"></span>foreign modules (opaque)</div>
-      <div class="toggle" style="pointer-events:none"><span style="width:14px;border-top:2px dashed #e3a008;display:inline-block"></span>inheritance (subclass → base)</div>
-    </div>
-    <div class="field">
-      <label>Overlay</label>
-      <div class="toggle"><input type="checkbox" id="cov-mode"> coverage mode (red→green)</div>
-      <div class="toggle"><input type="checkbox" id="accessible-only"><span class="dot" style="background:#3fb950;border-radius:2px"></span>accessible only (callable via MCP)</div>
-      <div id="covnote" class="hint" style="display:none">No coverage data yet — run coverage analysis, then reload.</div>
-    </div>
+      <div class="field" id="nav">
+        <div class="navhead">Entrypoints (inferred) — click to flow</div>
+        <div id="nav-flows" class="navlist"><div class="row">loading…</div></div>
+        <div class="navhead">Entry points</div>
+        <div id="nav-entries" class="navlist"><div class="row">loading…</div></div>
+        <div class="navhead">Hubs</div>
+        <div id="nav-hubs" class="navlist"><div class="row">loading…</div></div>
+      </div>
+      <div class="field">
+        <label>View</label>
+        <div class="toggle"><input type="checkbox" id="module-view"><span class="dot" style="background:#a371f7"></span>module view (collapse to files)</div>
+        <div class="toggle" id="map-level-wrap" style="display:none">group:
+          <select id="map-level">
+            <option value="file">by file</option>
+            <option value="package">by package (directory)</option>
+          </select>
+        </div>
+      </div>
+      <div class="field">
+        <label>Show</label>
+        <div class="toggle"><input type="checkbox" id="k-function" checked><span class="dot" style="background:#6ea8fe"></span>functions</div>
+        <div class="toggle"><input type="checkbox" id="k-class" checked><span class="dot" style="background:#f2a65a"></span>classes</div>
+        <div class="toggle"><input type="checkbox" id="k-import" checked><span class="dot" style="background:#7ee787"></span>imports</div>
+        <div class="toggle"><input type="checkbox" id="k-foreign" checked><span class="dot" style="background:#e3a008;border-radius:2px"></span>foreign modules (opaque)</div>
+        <div class="toggle" style="pointer-events:none"><span style="width:14px;border-top:2px dashed #e3a008;display:inline-block"></span>inheritance (subclass → base)</div>
+      </div>
+      <div class="field">
+        <label>Overlay</label>
+        <div class="toggle"><input type="checkbox" id="cov-mode"> coverage mode (red→green)</div>
+        <div class="toggle"><input type="checkbox" id="accessible-only"><span class="dot" style="background:#3fb950;border-radius:2px"></span>accessible only (callable via MCP)</div>
+        <div id="covnote" class="hint" style="display:none">No coverage data yet — run coverage analysis, then reload.</div>
+      </div>
+    </details>
     <div id="info"><div class="row">Click a node for details.</div></div>
-    <div class="hint">Scroll to zoom · drag background to pan · drag a node to move it · click to highlight neighbours.</div>
+    <div class="hint">Tip: the force graph lives under “Explore”. Scroll to zoom · drag to pan.</div>
   </div>
 </div>
 <script>
@@ -885,7 +900,10 @@ function updateCovNote() {
 }
 
 resize();
-load();
+// Land on the high-level block diagram, not the force graph. The force graph is
+// still built (available under "Explore" / "Back to graph"); if there's no
+// inferred entrypoint, enterSystemFlow is a no-op and the graph shows instead.
+load().then(() => enterSystemFlow());
 loadArchitecture();
 loadEntrypoints();
 loadTests();

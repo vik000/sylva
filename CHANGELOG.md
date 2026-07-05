@@ -5,6 +5,12 @@ grouped by the epics that shaped each line.
 
 ## 4.x — Polyglot analysis, executable MCP & full reporting
 
+- **4.6.0** — **Viz lands on the high-level diagram; simpler sidebar.** The UI
+  now opens on the **high-level block diagram** (system flow) instead of the
+  force graph, and the sidebar leads with the **high-level diagram button +
+  Logic paths + Execution traces**. The force-graph controls (filter, hubs,
+  kind/module/overlay toggles) moved into a collapsed **"Explore & filters"**
+  section. The force graph is still one click away ("Back to graph").
 - **4.5.0** — **Stable symbol ids across re-indexing.** `write_symbols` now
   stable-upserts by identity `(name, kind, line_start)` instead of
   delete-then-insert, so an unchanged symbol keeps its id on re-analyze. The rows
