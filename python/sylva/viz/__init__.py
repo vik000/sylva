@@ -17,6 +17,7 @@ from .export import (
     graph_version,
     module_map,
     neighborhood,
+    system_flow,
 )
 from .server import make_server, serve
 
@@ -31,6 +32,7 @@ __all__ = [
     "graph_version",
     "module_map",
     "neighborhood",
+    "system_flow",
     "make_server",
     "serve",
 ]

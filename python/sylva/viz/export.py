@@ -180,6 +180,43 @@ def flow_layout(db_path, entry):
     return {"entry": entry, "nodes": nodes, "edges": flow_edges}
 
 
+def system_flow(db_path, root=None):
+    """Feature 9.4 — the whole-project system-flow block diagram.
+
+    A first-class *global* layered view: the reachable outbound call subgraph
+    from the program's entrypoint, laid out top-down (reusing `flow_layout`).
+    The root defaults to Feature 9.1's inferred **primary** entrypoint; each node
+    is tagged `on_spine` when it lies on Feature 9.2's main spine, so the UI can
+    emphasise the backbone.
+
+    Returns `{root, nodes: [{id, name, kind, file, line, layer, on_spine}],
+    edges}`. An empty graph / no inferred entry yields empty nodes/edges. Raises
+    FileNotFoundError if the database does not exist.
+    """
+    if not os.path.exists(db_path):
+        raise FileNotFoundError(f"database not found: {db_path}")
+    import sylva  # lazy: the deterministic analysis lives in Rust (9.1 / 9.2)
+
+    if root is None:
+        primary = next(
+            (e["symbol"] for e in sylva.infer_entrypoints(db_path) if e.get("primary")),
+            None,
+        )
+        if primary is None:
+            return {"root": None, "nodes": [], "edges": []}
+        root = primary
+
+    flow = flow_layout(db_path, root)  # reachable, BFS-layered from the root
+    spine = sylva.main_spine(db_path, root)
+    on_spine = {(n["symbol"], n["file"], n["line"]) for n in spine["nodes"]}
+
+    nodes = [
+        {**n, "on_spine": (n["name"], n["file"], n["line"]) in on_spine}
+        for n in flow["nodes"]
+    ]
+    return {"root": root, "nodes": nodes, "edges": flow["edges"]}
+
+
 def exec_path(db_path, test):
     """Feature 4.11 — the part of the call graph a test actually exercised, as a
     layered flowchart. The exercised symbols are the targets of the test's

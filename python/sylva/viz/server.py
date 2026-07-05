@@ -29,6 +29,7 @@ from .export import (
     graph_version,
     module_map,
     neighborhood,
+    system_flow,
 )
 
 ASSETS_DIR = os.path.join(os.path.dirname(__file__), "assets")
@@ -62,6 +63,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._serve_architecture_map()
         elif route == "/dataflow":
             self._serve_dataflow()
+        elif route == "/system-flow":
+            self._serve_system_flow()
         else:
             self._send_json(404, {"error": f"not found: {self.path}"})
 
@@ -146,6 +149,15 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._send_json(500, {"error": str(e)})
         except Exception as e:
             self._send_json(500, {"error": f"failed to build neighborhood: {e}"})
+
+    def _serve_system_flow(self):
+        root = parse_qs(urlparse(self.path).query).get("root", [None])[0]
+        try:
+            self._send_json(200, system_flow(self._db_path, root))
+        except FileNotFoundError as e:
+            self._send_json(500, {"error": str(e)})
+        except Exception as e:
+            self._send_json(500, {"error": f"failed to build system flow: {e}"})
 
     def _serve_dataflow(self):
         symbol = parse_qs(urlparse(self.path).query).get("symbol", [None])[0]

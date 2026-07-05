@@ -62,6 +62,9 @@
       <button id="focus-back">← Exit focus</button>
     </div>
     <div class="field">
+      <button id="system-flow" title="Whole-project block diagram, rooted at the inferred entrypoint">▤ System flow (whole project)</button>
+    </div>
+    <div class="field">
       <label>Filter by name / file</label>
       <input id="filter" type="text" placeholder="e.g. util or src/foo.py" />
     </div>
@@ -300,6 +303,8 @@ function draw() {
       ctx.strokeStyle = "#fff"; ctx.lineWidth = 2 / view.k; ctx.stroke();
     } else if (focusMode && pinned.has(n.id)) {
       ctx.strokeStyle = "#f2a65a"; ctx.lineWidth = 2 / view.k; ctx.stroke();  // pinned
+    } else if (flowMode && n.on_spine) {
+      ctx.strokeStyle = "#a371f7"; ctx.lineWidth = 2.5 / view.k; ctx.stroke();  // 9.4 main spine
     }
     if (view.k > 1.1 || n.id === hoverId || (selected && n.id === selected.id)) {
       ctx.globalAlpha = dim ? 0.35 : 1;
@@ -436,6 +441,20 @@ async function enterExec(test) {
   if (!data.nodes || !data.nodes.length) return;
   renderLayered(data.nodes, data.edges, `exec path · ${test} · ${data.nodes.length} symbols`);
 }
+
+// Feature 9.4 — the whole-project system-flow block diagram, rooted at the
+// inferred primary entrypoint (9.1) with the main spine (9.2) emphasised.
+// Reachable from the sidebar without selecting a node first.
+async function enterSystemFlow() {
+  if (focusMode) exitFocus();
+  let data;
+  try { data = await (await fetch("system-flow")).json(); }
+  catch (e) { return; }
+  if (!data.nodes || !data.nodes.length) return;
+  const spine = data.nodes.filter(n => n.on_spine).length;
+  renderLayered(data.nodes, data.edges, `system flow · root ${data.root} · ${data.nodes.length} nodes · ${spine} on spine`);
+}
+document.getElementById("system-flow").addEventListener("click", enterSystemFlow);
 
 // Feature 4.12 — where a symbol's parameters flow, as a layered flowchart.
 async function enterData(symbol) {
