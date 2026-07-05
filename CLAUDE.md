@@ -1233,3 +1233,33 @@ runs an LLM itself; the skills orchestrate the agent side. (GitHub milestone
 - Note: highest-leverage skill. Depends on Epic 9 (esp. 9.1/9.8). No Rust change
   — pure Python report assembly over the existing analysis functions. The
   deterministic core is the product; the "skill" is the convenient invocation.
+
+#### Feature 10.3 — diagram skill (whole-workflow block diagrams) (issue #63)
+- Description: Produce **whole-workflow block diagrams** (Mermaid) from Sylva's
+  graph — persisted artifacts (checked into the repo), not chat-only. Complements
+  9.4 (which *renders* structure in the UI); this *exports* it, and gives an
+  agent a base to annotate with meaning.
+- **Shape (same as 10.1): deterministic generator core + a thin skill wrapper.**
+  `sylva.diagrams.generate_diagrams(db) -> markdown` emits fenced ```mermaid
+  blocks *mechanically* from the analysis; `sylva diagram` CLI writes
+  `DIAGRAMS.md`; a skill invokes it and lets the agent add captions/annotations.
+- Inputs: db path, output path (default `DIAGRAMS.md`)
+- Process (deterministic, reuse existing analysis — no new graph logic):
+  - **System flow** (`flowchart TD`) from Feature 9.4 `system_flow` (rooted at the
+    inferred primary), with the main spine (9.2) styled distinctly.
+  - **Module/package map** (`flowchart LR`) from Feature 4.7 `module_map`
+    (package level), weighted edges; test packages filtered out.
+  - **Layer diagram** (`flowchart TD`) from Feature 9.8 archetype/layers — the
+    interface→business→data→transport tiers with counts.
+  - Sanitise node ids/labels for valid Mermaid. GitHub renders the ```mermaid
+    blocks; one `DIAGRAMS.md` artifact.
+- Outputs: a `DIAGRAMS.md` with valid Mermaid diagrams; a `diagram` CLI
+  subcommand; a skill definition
+- Testing:
+  - General: emits valid Mermaid (flowchart declarations + node/edge lines) for a
+    known repo; the system-flow diagram contains the inferred primary + spine
+  - Idempotent (same graph → same diagrams)
+  - Edge: empty graph → a valid doc (no crash); db not found raises
+- Note: depends on Epic 9 (9.2/9.4) + 4.7. No Rust change; pure Python emit over
+  the existing analysis. Test code filtered (reuses 10.1's `_is_test_file`).
+  Pairs with 10.1: brief (text) + diagrams (visual) = an onboarding pack.

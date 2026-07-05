@@ -147,6 +147,10 @@ def main(argv=None):
     br.add_argument("--db", default=DEFAULT_DB, help=f"Graph database path (default {DEFAULT_DB})")
     br.add_argument("--out", default="SYLVA.md", help="Output file (default SYLVA.md)")
 
+    dg = sub.add_parser("diagram", help="Generate Mermaid workflow diagrams (DIAGRAMS.md)")
+    dg.add_argument("--db", default=DEFAULT_DB, help=f"Graph database path (default {DEFAULT_DB})")
+    dg.add_argument("--out", default="DIAGRAMS.md", help="Output file (default DIAGRAMS.md)")
+
     args = parser.parse_args(argv)
 
     # Bare `sylva` (no command): show the quickstart + available commands, then
@@ -203,6 +207,19 @@ def main(argv=None):
         with open(args.out, "w") as f:
             f.write(md)
         print(f"sylva: wrote project brief -> {args.out}")
+        return 0
+
+    if args.command == "diagram":
+        from .diagrams import generate_diagrams
+
+        try:
+            md = generate_diagrams(args.db)
+        except FileNotFoundError as e:
+            print(f"sylva: {e}", file=sys.stderr)
+            return 1
+        with open(args.out, "w") as f:
+            f.write(md)
+        print(f"sylva: wrote diagrams -> {args.out}")
         return 0
 
     parser.error(f"unknown command: {args.command}")  # unreachable via argparse
