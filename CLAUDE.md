@@ -1038,6 +1038,33 @@ Precedes Epic 10 (skills). (GitHub milestone "Epic 9 …".)
   entrypoint, it doesn't rediscover it. Feeds 9.4 (global flow view). Lifts the
   shared SCC/graph helpers out of `entrypoints.rs` for reuse by 9.3.
 
+#### Feature 9.3 — Centrality: dominators + betweenness (issue #57)
+- Description: Rank symbols by *structural importance on paths*, beyond the raw
+  degree the viz already uses. **Betweenness** finds the chokepoints many
+  entry→leaf paths pass through; **dominators** find the gateways that gate
+  access to large subgraphs (removing one cuts off everything below). Deterministic.
+- Inputs: db path
+- Process (over the `calls` graph; reuse `graph.rs`):
+  - **Betweenness centrality** — count of shortest paths through each node
+    (Brandes' algorithm on the call graph; on a cyclic graph, run over the
+    reachable structure with a visited set so it terminates).
+  - **Dominator tree** — from a virtual super-source over the inferred
+    entrypoints (9.1), compute immediate dominators (iterative dataflow /
+    Cooper-Harvey-Kennedy); `dominates` = size of each node's dominated subtree.
+  - Also carry `degree` (existing) for comparison.
+- Outputs: `centrality(db) -> [{symbol, file, betweenness, dominates, degree}]`,
+  ranked; exposed via MCP; usable by the viz for node sizing/highlight and to
+  fold the dominator signal back into 9.1 entrypoint ranking.
+- Testing:
+  - Betweenness: a single articulation point on all paths scores highest
+  - Dominators: a node gating a subtree reports the right `dominates` count; a
+    leaf dominates nothing
+  - Edge: disconnected / single-node / empty graph handled; cycles terminate
+  - Negative: db not found raises
+- Note: reuses `graph.rs` (SCC/traversal). Completes Epic 9; the deferred
+  "dominator-tree ranking" signal from Feature 9.1 lands here and can enrich
+  entrypoint ranking. Precision/determinism over cleverness.
+
 #### Feature 9.4 — Global "system flow" view (whole-project block diagram) (issue #58)
 - Description: The first *visible* Epic 9 feature — a whole-project, top-down
   **block diagram** rooted at the inferred primary entrypoint (9.1), not the

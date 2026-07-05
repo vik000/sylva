@@ -8,6 +8,7 @@ pub(crate) fn verbose() -> bool {
 }
 
 mod architecture;
+mod centrality;
 mod coverage;
 mod db;
 mod edges;
@@ -52,5 +53,6 @@ fn sylva(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(entrypoints::infer_entrypoints, m)?)?;
     m.add_function(wrap_pyfunction!(spine::main_spine, m)?)?;
     m.add_function(wrap_pyfunction!(layers::infer_layers, m)?)?;
+    m.add_function(wrap_pyfunction!(centrality::centrality, m)?)?;
     Ok(())
 }
