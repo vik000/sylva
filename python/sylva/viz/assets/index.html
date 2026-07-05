@@ -304,6 +304,7 @@ function visible(n) {
 
 function draw() {
   if (traceMode) return drawTrace();
+  if (flowMode) return drawLayered();
   ctx.clearRect(0, 0, W, H);
   ctx.save();
   ctx.translate(view.x, view.y); ctx.scale(view.k, view.k);
@@ -434,18 +435,24 @@ function select(n) {
 // --- Features 4.10 / 4.11: layered views (call flow / execution path) ----- //
 // Lay nodes out by layer (top→down), spread within each layer. Fixed positions,
 // no force sim.
+function boxWidth(n) { return Math.max(48, (n.name ? n.name.length : 3) * 7 + 22); }
+
 function renderLayered(nodes, edges, statsLabel) {
   flowMode = true;
   selected = null;
-  const LAYER_GAP = 90, NODE_GAP = 120;
+  const LAYER_GAP = 96, GAP = 26;
   const byLayer = {};
   for (const n of nodes) (byLayer[n.layer] = byLayer[n.layer] || []).push(n);
   NODES = [];
   for (const layer of Object.keys(byLayer).map(Number).sort((a, b) => a - b)) {
     const row = byLayer[layer];
-    row.forEach((n, i) => NODES.push({
-      ...n, x: (i - (row.length - 1) / 2) * NODE_GAP, y: layer * LAYER_GAP, vx: 0, vy: 0,
-    }));
+    const widths = row.map(boxWidth);
+    const total = widths.reduce((s, w) => s + w, 0) + GAP * (row.length - 1);
+    let cx = -total / 2;
+    row.forEach((n, i) => {
+      NODES.push({ ...n, w: widths[i], h: 24, x: cx + widths[i] / 2, y: layer * LAYER_GAP, vx: 0, vy: 0 });
+      cx += widths[i] + GAP;
+    });
   }
   LINKS = edges;
   BY_ID = new Map(NODES.map(n => [n.id, n]));
@@ -515,6 +522,45 @@ function drawTrace() {
   ctx.textAlign = "left";
   ctx.restore();
 }
+// Layered views (flow, exec path, system flow, data flow) — boxes + directed
+// downward arrows, sharing the trace view's box/arrow helpers.
+function drawLayered() {
+  ctx.clearRect(0, 0, W, H);
+  ctx.save();
+  ctx.translate(view.x, view.y); ctx.scale(view.k, view.k);
+  for (const l of LINKS) {
+    const a = BY_ID.get(l.source), b = BY_ID.get(l.target);
+    if (!a || !b || !visible(a) || !visible(b)) continue;
+    const hot = selected && (l.source === selected.id || l.target === selected.id);
+    if (l.kind === "inherits") {
+      ctx.setLineDash([5 / view.k, 4 / view.k]);
+      drawArrow(a.x, a.y + a.h / 2, b.x, b.y - b.h / 2, hot ? "rgba(227,160,8,.95)" : "rgba(227,160,8,.55)");
+      ctx.setLineDash([]);
+    } else {
+      drawArrow(a.x, a.y + a.h / 2, b.x, b.y - b.h / 2, hot ? "rgba(110,168,254,.9)" : "rgba(150,160,180,.4)");
+    }
+  }
+  ctx.textBaseline = "middle"; ctx.textAlign = "left";
+  for (const n of NODES) {
+    if (!visible(n)) continue;
+    const x = n.x - n.w / 2, y = n.y - n.h / 2;
+    ctx.fillStyle = coverageMode
+      ? (COV_COLOR[n.coverage_state] || COV_COLOR.none)
+      : (KIND_COLOR[n.kind] || "#9aa4b8");
+    roundRect(x, y, n.w, n.h, 5 / view.k); ctx.fill();
+    if (n.id === (selected && selected.id) || n.id === hoverId) {
+      ctx.strokeStyle = "#fff"; ctx.lineWidth = 2 / view.k; ctx.stroke();
+    } else if (n.on_spine) {                      // 9.4 main spine
+      ctx.strokeStyle = "#a371f7"; ctx.lineWidth = 2.5 / view.k; ctx.stroke();
+    } else if (n.accessible) {                    // 8.3 agent-callable
+      ctx.strokeStyle = "#3fb950"; ctx.lineWidth = 2 / view.k; ctx.stroke();
+    }
+    ctx.fillStyle = "#0d1117"; ctx.font = `${12 / view.k}px sans-serif`;
+    ctx.fillText(n.name, x + 8 / view.k, n.y);
+  }
+  ctx.restore();
+}
+
 function renderTrace(data, label) {
   traceMode = true; flowMode = true; focusMode = false; selected = null;
   const ROW = 42, INDENT = 46;

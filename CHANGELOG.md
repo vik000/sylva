@@ -5,6 +5,11 @@ grouped by the epics that shaped each line.
 
 ## 4.x — Polyglot analysis, executable MCP & full reporting
 
+- **4.4.0** — **Boxes for every block-diagram view.** The layered views (system
+  flow, per-entry flow, execution path, data flow) now render as **labelled
+  boxes with directed downward arrows** — like the runtime-trace view — instead
+  of circles in a row. Inheritance edges stay dashed-amber; spine/accessible
+  borders preserved. The force graph is unchanged.
 - **4.3.0** — **Inheritance edges + centrality-based library rooting.**
   `class X(Base)` now produces an `inherits` edge (resolved import-aware /
   same-file / dotted → last segment, never a false edge), rendered in the viz as

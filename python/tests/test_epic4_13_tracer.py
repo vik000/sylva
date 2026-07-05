@@ -207,3 +207,6 @@ class TestAsset:
         assert 'id="nav-traces"' in html                       # sidebar list
         assert "enterTrace" in html                            # click handler
         assert "roundRect" in html and "drawArrow" in html     # boxes + arrows
+        # Layered views (flow / exec / system-flow / data-flow) also draw boxes.
+        assert "function drawLayered" in html
+        assert "if (flowMode) return drawLayered" in html
