@@ -5,6 +5,13 @@ grouped by the epics that shaped each line.
 
 ## 4.x — Polyglot analysis, executable MCP & full reporting
 
+- **4.5.0** — **Stable symbol ids across re-indexing.** `write_symbols` now
+  stable-upserts by identity `(name, kind, line_start)` instead of
+  delete-then-insert, so an unchanged symbol keeps its id on re-analyze. The rows
+  that reference it — `test_covers` edges (logic paths), `call_trace` (runtime
+  traces), and `coverage_pct` — **survive a re-analyze** instead of being
+  cascade-deleted or orphaned. (Fixes logic paths / traces silently emptying
+  after `sylva analyze`.)
 - **4.4.0** — **Boxes for every block-diagram view.** The layered views (system
   flow, per-entry flow, execution path, data flow) now render as **labelled
   boxes with directed downward arrows** — like the runtime-trace view — instead

@@ -6,9 +6,13 @@
 //! initialised via `init_db`.
 //!
 //! Strategy: everything happens in a single transaction — upsert the file
-//! record, delete that file's existing symbols, then insert the current set.
-//! Delete-then-insert makes re-indexing a changed file clean (no stale rows)
-//! and makes repeated writes of the same input idempotent (no duplicates).
+//! record, then **stable-upsert** its symbols: each incoming symbol is matched
+//! to an existing row by identity `(name, kind, line_start)` and updated in
+//! place (preserving its id), new symbols are inserted, and symbols no longer
+//! present are deleted. Preserving ids means the rows that reference a symbol —
+//! `test_covers` edges, `call_trace` rows, and `coverage_pct` — survive a
+//! re-analyze instead of being cascade-deleted or orphaned. Re-indexing stays
+//! clean (stale rows removed) and idempotent (no duplicates).
 //!
 //! Robustness (per project rules):
 //! - a symbol whose `kind` is the parse-error sentinel is *explicitly ignored*
@@ -17,6 +21,8 @@
 //!   rejected* with a clear error, which aborts and rolls back the whole write;
 //! - any SQLite failure mid-write rolls back the transaction — never a partial
 //!   graph.
+
+use std::collections::{HashMap, HashSet};
 
 use pyo3::exceptions::{PyOSError, PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -125,13 +131,41 @@ pub fn write_symbols(
         .query_row("SELECT id FROM files WHERE path = ?1", params![file_path], |r| r.get(0))
         .map_err(|e| PyRuntimeError::new_err(format!("failed to read file id for '{}': {}", file_path, e)))?;
 
-    // Clear this file's previous symbols so re-indexing is clean/idempotent.
-    tx.execute("DELETE FROM symbols WHERE file_id = ?1", params![file_id])
-        .map_err(|e| PyRuntimeError::new_err(format!("failed to clear old symbols: {}", e)))?;
-
-    let mut count = 0usize;
+    // Stable upsert (not delete-then-insert): re-indexing preserves the id of
+    // every unchanged symbol, so the rows that reference it by id — `test_covers`
+    // edges (logic paths), `call_trace` (runtime traces), and `coverage_pct` —
+    // survive a re-analyze instead of being cascade-deleted or orphaned. A symbol
+    // is matched by its stable identity `(name, kind, line_start)`.
+    let mut existing: HashMap<(String, String, Option<i64>), i64> = HashMap::new();
     {
         let mut stmt = tx
+            .prepare("SELECT id, name, kind, line_start FROM symbols WHERE file_id = ?1")
+            .map_err(|e| PyRuntimeError::new_err(format!("failed to read old symbols: {}", e)))?;
+        let mut q = stmt
+            .query(params![file_id])
+            .map_err(|e| PyRuntimeError::new_err(format!("failed to read old symbols: {}", e)))?;
+        while let Some(r) = q
+            .next()
+            .map_err(|e| PyRuntimeError::new_err(format!("failed to read old symbols: {}", e)))?
+        {
+            let id: i64 = r.get(0).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+            let name: String = r.get(1).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+            let kind: String = r.get(2).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+            let ls: Option<i64> = r.get(3).map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+            existing.insert((name, kind, ls), id);
+        }
+    }
+
+    let mut count = 0usize;
+    let mut kept: HashSet<i64> = HashSet::new();
+    {
+        let mut update = tx
+            .prepare(
+                "UPDATE symbols SET line_end = ?2, docstring = ?3, \
+                 import_module = ?4, import_name = ?5 WHERE id = ?1",
+            )
+            .map_err(|e| PyRuntimeError::new_err(format!("failed to prepare update: {}", e)))?;
+        let mut insert = tx
             .prepare(
                 "INSERT INTO symbols \
                  (file_id, name, kind, line_start, line_end, docstring, import_module, import_name) \
@@ -140,21 +174,36 @@ pub fn write_symbols(
             .map_err(|e| PyRuntimeError::new_err(format!("failed to prepare insert: {}", e)))?;
 
         for row in &rows {
-            stmt.execute(params![
-                file_id,
-                row.name,
-                row.kind,
-                row.line_start,
-                row.line_end,
-                row.docstring,
-                row.import_module,
-                row.import_name
-            ])
-            .map_err(|e| {
-                PyRuntimeError::new_err(format!("failed to write symbol '{}': {}", row.name, e))
-            })?;
+            let key = (row.name.clone(), row.kind.clone(), row.line_start);
+            // Match an existing row only once; a duplicate identity inserts fresh.
+            let matched = existing.get(&key).copied().filter(|id| !kept.contains(id));
+            if let Some(id) = matched {
+                update
+                    .execute(params![id, row.line_end, row.docstring, row.import_module, row.import_name])
+                    .map_err(|e| PyRuntimeError::new_err(format!("failed to update symbol '{}': {}", row.name, e)))?;
+                kept.insert(id);
+            } else {
+                insert
+                    .execute(params![
+                        file_id, row.name, row.kind, row.line_start,
+                        row.line_end, row.docstring, row.import_module, row.import_name
+                    ])
+                    .map_err(|e| PyRuntimeError::new_err(format!("failed to write symbol '{}': {}", row.name, e)))?;
+            }
             count += 1;
         }
+    }
+
+    // Remove symbols that no longer exist in the file (their referencing edges
+    // cascade — correctly, since those symbols are gone).
+    let to_delete: Vec<i64> = existing
+        .values()
+        .copied()
+        .filter(|id| !kept.contains(id))
+        .collect();
+    for id in to_delete {
+        tx.execute("DELETE FROM symbols WHERE id = ?1", params![id])
+            .map_err(|e| PyRuntimeError::new_err(format!("failed to remove stale symbol: {}", e)))?;
     }
 
     tx.commit()
