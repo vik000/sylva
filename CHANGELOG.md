@@ -5,6 +5,14 @@ grouped by the epics that shaped each line.
 
 ## 4.x — Polyglot analysis, executable MCP & full reporting
 
+- **4.8.0** — **View picker + Classes & Layers views.** A single **View**
+  chooser in the sidebar switches between every way of seeing the code:
+  **Overview** (high-level flow), **Modules** (packages by connection),
+  **Files**, **Classes** (every class with its methods + inheritance),
+  **Layers** (microservice tiers: interface/business/data/transport, endpoints
+  highlighted — for services), **Logic paths** (per-test execution), and
+  **Force map** (raw graph). Classes and Layers are new dedicated renderers
+  (`/classes`, `/layers`).
 - **4.7.0** — **Task-oriented sidebar.** The sidebar is reorganised into three
   plain-language groups — **See the whole system** (the overview diagram),
   **Follow one test** (runtime traces + coverage paths, collapsed with live

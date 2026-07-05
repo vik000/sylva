@@ -394,6 +394,115 @@ def module_map(db_path, level="file"):
     return {"level": level, "nodes": nodes, "edges": map_edges}
 
 
+def class_view(db_path):
+    """Classes view: every class with the methods defined inside it, plus
+    inheritance links between classes.
+
+    A method is a `function` whose span nests inside the class (innermost class
+    wins for nested classes). Returns `{classes: [{id, name, file, methods:
+    [{id, name, coverage_state}]}], edges: [{source, target}]}` where edges are
+    subclass -> base `inherits` relationships. Raises FileNotFoundError if the
+    database does not exist.
+    """
+    if not os.path.exists(db_path):
+        raise FileNotFoundError(f"database not found: {db_path}")
+    conn = sqlite3.connect(db_path)
+    try:
+        cls_rows = conn.execute(
+            "SELECT s.id, s.name, s.file_id, s.line_start, s.line_end, f.path "
+            "FROM symbols s JOIN files f ON f.id = s.file_id WHERE s.kind = 'class'"
+        ).fetchall()
+        funcs = conn.execute(
+            "SELECT id, name, file_id, line_start, coverage_pct "
+            "FROM symbols WHERE kind = 'function'"
+        ).fetchall()
+        inh = conn.execute(
+            "SELECT src_id, dst_id FROM edges WHERE kind = 'inherits'").fetchall()
+    finally:
+        conn.close()
+
+    # Assign each function to the innermost class (same file, smallest span
+    # containing its start line).
+    owner = {}
+    for fid, _fn, ffid, fls, _cov in funcs:
+        best = None
+        for cid, _cn, cfid, cs, ce, _cp in cls_rows:
+            if cfid == ffid and cs is not None and ce is not None and cs < (fls or 0) <= ce:
+                span = ce - cs
+                if best is None or span < best[1]:
+                    best = (cid, span)
+        if best:
+            owner[fid] = best[0]
+
+    meta = {fid: (name, cov) for fid, name, _f, _l, cov in funcs}
+    methods_by_class = {}
+    for fid, cid in owner.items():
+        name, cov = meta[fid]
+        methods_by_class.setdefault(cid, []).append(
+            {"id": fid, "name": name, "coverage_state": coverage_state(cov)})
+
+    classes = [
+        {
+            "id": cid, "name": cname, "file": cpath,
+            "methods": sorted(methods_by_class.get(cid, []), key=lambda m: m["name"]),
+        }
+        for cid, cname, _cfid, _cs, _ce, cpath in cls_rows
+    ]
+    edges = [{"source": s, "target": t} for s, t in inh]
+    return {"classes": sorted(classes, key=lambda c: c["name"]), "edges": edges}
+
+
+def layer_view(db_path):
+    """Microservice / architectural-layer view: symbols grouped by inferred
+    layer (interface / business / data / transport) with cross-layer call edges.
+
+    Returns `{archetype, layers: [{layer, symbols: [{id, name, file, endpoint}]}],
+    edges: [{source, target}]}`, layers ordered interface -> business -> data ->
+    transport. `endpoint` marks web-route entrypoints (interface). For a library
+    (archetype != service) the layers collapse to `business` — the UI can note
+    that the layered view is meant for services. Raises FileNotFoundError if the
+    database does not exist.
+    """
+    import sylva
+
+    if not os.path.exists(db_path):
+        raise FileNotFoundError(f"database not found: {db_path}")
+    info = sylva.infer_layers(db_path)
+    endpoints = {
+        e["symbol"]
+        for e in sylva.infer_entrypoints(db_path)
+        if e.get("marker_kind") == "web_route"
+    }
+    layer_of = {(e["symbol"], e["file"]): e["layer"] for e in info["layers"]}
+
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT s.id, s.name, f.path FROM symbols s JOIN files f ON f.id = s.file_id "
+            "WHERE s.kind IN ('function', 'class')"
+        ).fetchall()
+        edges = conn.execute("SELECT src_id, dst_id FROM edges WHERE kind = 'calls'").fetchall()
+    finally:
+        conn.close()
+
+    ORDER = ["interface", "business", "data", "transport"]
+    by_layer, id_layer = {}, {}
+    for sid, name, path in rows:
+        lyr = layer_of.get((name, path))
+        if lyr is None:
+            continue
+        id_layer[sid] = lyr
+        by_layer.setdefault(lyr, []).append(
+            {"id": sid, "name": name, "file": path, "endpoint": name in endpoints})
+
+    layers = [
+        {"layer": l, "symbols": sorted(by_layer[l], key=lambda s: s["name"])}
+        for l in ORDER if by_layer.get(l)
+    ]
+    cross = [{"source": s, "target": t} for s, t in edges if s in id_layer and t in id_layer]
+    return {"archetype": info["archetype"], "layers": layers, "edges": cross}
+
+
 def neighborhood(db_path, symbol, depth=1):
     """Feature 4.9 — the N-hop neighbourhood of `symbol`, for the focus view.
 

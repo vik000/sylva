@@ -210,10 +210,10 @@ class TestAsset:
         # Layered views (flow / exec / system-flow / data-flow) also draw boxes.
         assert "function drawLayered" in html
         assert "if (flowMode) return drawLayered" in html
-        # UX: land on the high-level diagram (not the force graph); task-oriented
-        # groups; the test-path lists sit above the Explore filter.
-        assert "load().then(() => enterSystemFlow())" in html
-        for grp in ("See the whole system", "Follow one test", "Dig into the code"):
-            assert grp in html
-        assert html.index('id="nav-traces"') < html.index('id="filter"')
-        assert html.index('id="nav-tests"') < html.index('id="filter"')
+        # UX: a view picker drives everything; opens on Overview.
+        assert "load().then(() => setView(\"overview\"))" in html
+        assert 'id="views"' in html and "function setView" in html
+        for v in ("overview", "modules", "files", "classes", "layers", "paths", "force"):
+            assert f'data-view="{v}"' in html
+        # the two new views have renderers
+        assert "function drawClasses" in html and "function drawLayers" in html

@@ -22,7 +22,9 @@ from urllib.parse import parse_qs, urlparse
 from .export import (
     architecture,
     build_graph,
+    class_view,
     data_flow,
+    layer_view,
     entrypoints,
     exec_path,
     export_graph_json,
@@ -76,6 +78,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._serve_traces()
         elif route == "/trace":
             self._serve_trace()
+        elif route == "/classes":
+            self._serve_view(class_view)
+        elif route == "/layers":
+            self._serve_view(layer_view)
         else:
             self._send_json(404, {"error": f"not found: {self.path}"})
 
@@ -158,6 +164,14 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._send_json(500, {"error": str(e)})
         except Exception as e:
             self._send_json(500, {"error": f"failed to list tests: {e}"})
+
+    def _serve_view(self, fn):
+        try:
+            self._send_json(200, fn(self._db_path))
+        except FileNotFoundError as e:
+            self._send_json(500, {"error": str(e)})
+        except Exception as e:
+            self._send_json(500, {"error": f"failed to build view: {e}"})
 
     def _serve_traces(self):
         try:

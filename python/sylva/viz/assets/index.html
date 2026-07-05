@@ -54,6 +54,13 @@
   .group-head { color: var(--ink); font-size: 10px; font-weight: 700; letter-spacing: .9px;
     text-transform: uppercase; opacity: .6; margin: 16px 0 6px; }
   .cnt { color: var(--accent); font-weight: 400; }
+  .views button { display: block; width: 100%; text-align: left; margin: 3px 0; padding: 6px 9px;
+    background: #171a23; border: 1px solid var(--line); border-radius: 6px; color: var(--ink);
+    cursor: pointer; font: inherit; line-height: 1.25; }
+  .views button:hover { border-color: var(--accent); }
+  .views button.active { background: #1b2436; border-color: var(--accent); }
+  .views .vh { display: block; color: var(--muted); font-size: 10px; margin-top: 1px; }
+  .views button.active .vh { color: #9db4e8; }
 </style>
 </head>
 <body>
@@ -72,29 +79,36 @@
       <div id="focus-crumb" class="hint" style="margin-top:6px"></div>
       <button id="focus-back">← Exit focus</button>
     </div>
-    <!-- 1. See the whole system -->
-    <div class="group-head">See the whole system</div>
-    <div class="field">
-      <button id="system-flow" title="Whole-project block diagram, rooted at the inferred entrypoint">▤ System overview</button>
+    <!-- The view picker: choose what you're looking at. -->
+    <div class="group-head">View</div>
+    <div id="views" class="views">
+      <button data-view="overview">▤ Overview <span class="vh">high-level flow</span></button>
+      <button data-view="modules">⬚ Modules <span class="vh">packages by connection</span></button>
+      <button data-view="files">▦ Files <span class="vh">files &amp; contents</span></button>
+      <button data-view="classes">◎ Classes <span class="vh">classes, methods, inheritance</span></button>
+      <button data-view="layers">≡ Layers <span class="vh">microservice tiers</span></button>
+      <button data-view="paths">⇢ Logic paths <span class="vh">how a test runs</span></button>
+      <button data-view="force">✳ Force map <span class="vh">raw graph</span></button>
+    </div>
+    <div id="view-note" class="hint" style="margin-top:6px"></div>
+
+    <!-- Shown only for the Logic paths view. -->
+    <div id="paths-panel" style="display:none">
+      <details class="more" open>
+        <summary>Runtime traces <span id="cnt-traces" class="cnt"></span></summary>
+        <div class="hint" style="margin:2px 0 6px">The real order calls happened (<code>sylva trace</code>).</div>
+        <div id="nav-traces" class="navlist"><div class="row">loading…</div></div>
+      </details>
+      <details class="more" open>
+        <summary>From coverage <span id="cnt-tests" class="cnt"></span></summary>
+        <div class="hint" style="margin:2px 0 6px">What each test touched (<code>sylva logic-paths</code>).</div>
+        <div id="nav-tests" class="navlist"><div class="row">loading…</div></div>
+      </details>
     </div>
 
-    <!-- 2. Follow one test — pick a test, see how it ran, as boxes -->
-    <div class="group-head">Follow one test</div>
+    <div class="group-head">Explore</div>
     <details class="more">
-      <summary>Runtime traces <span id="cnt-traces" class="cnt"></span></summary>
-      <div class="hint" style="margin:2px 0 6px">The real order calls happened, from <code>sylva trace</code>.</div>
-      <div id="nav-traces" class="navlist"><div class="row">loading…</div></div>
-    </details>
-    <details class="more">
-      <summary>From coverage <span id="cnt-tests" class="cnt"></span></summary>
-      <div class="hint" style="margin:2px 0 6px">What each test touched, from coverage.</div>
-      <div id="nav-tests" class="navlist"><div class="row">loading…</div></div>
-    </details>
-
-    <!-- 3. Dig into the code -->
-    <div class="group-head">Dig into the code</div>
-    <details class="more">
-      <summary>Explore &amp; filters</summary>
+      <summary>Filters &amp; navigator</summary>
       <div class="field">
         <label>Filter by name / file</label>
         <input id="filter" type="text" placeholder="e.g. util or src/foo.py" />
@@ -149,7 +163,8 @@ let W = 0, H = 0, DPR = Math.max(1, window.devicePixelRatio || 1);
 let NODES = [], LINKS = [], BY_ID = new Map(), ADJ = new Map();
 let view = { x: 0, y: 0, k: 1 };          // pan/zoom
 let selected = null, hoverId = null, currentVersion = null, coverageMode = false;
-let moduleView = false, flowMode = false, traceMode = false;
+let moduleView = false, flowMode = false, traceMode = false, classMode = false, layerMode = false;
+let LAYER_BANDS = [], activeView = "overview";
 // Feature 4.7 — architecture map: module view can group by file (4.6 default)
 // or by package (directory). `MODULES_OVERRIDE` holds the fetched package-level
 // nodes/links when the coarser grouping is selected.
@@ -239,7 +254,7 @@ async function load() {
 
 // Poll for changes and live-update the diagram when the graph changes.
 async function poll() {
-  if (flowMode) return;  // don't clobber the flowchart with a live graph update
+  if (flowMode || classMode || layerMode) return;  // don't clobber a static view
   try {
     const r = await fetch("version");
     if (!r.ok) return;
@@ -331,6 +346,8 @@ function visible(n) {
 
 function draw() {
   if (traceMode) return drawTrace();
+  if (classMode) return drawClasses();
+  if (layerMode) return drawLayers();
   if (flowMode) return drawLayered();
   ctx.clearRect(0, 0, W, H);
   ctx.save();
@@ -617,6 +634,143 @@ async function enterTrace(test) {
   renderTrace(data, `execution trace · ${test} · ${data.nodes.length} calls in order`);
 }
 
+// --- Classes view: each class + its methods, with inheritance arrows ------- //
+function measureW(s) { ctx.font = "12px sans-serif"; return ctx.measureText(s).width; }
+function drawClasses() {
+  ctx.clearRect(0, 0, W, H); ctx.save();
+  ctx.translate(view.x, view.y); ctx.scale(view.k, view.k);
+  for (const l of LINKS) {                       // subclass -> base (dashed amber)
+    const a = BY_ID.get(l.source), b = BY_ID.get(l.target);
+    if (!a || !b) continue;
+    ctx.setLineDash([5 / view.k, 4 / view.k]);
+    drawArrow(a.x, a.y - a.h / 2, b.x, b.y + b.h / 2, "rgba(227,160,8,.85)");
+    ctx.setLineDash([]);
+  }
+  const HEADER = 20, LINE = 14, PAD = 8;
+  ctx.textBaseline = "middle"; ctx.textAlign = "left";
+  for (const n of NODES) {
+    const x = n.x - n.w / 2, y = n.y - n.h / 2;
+    ctx.fillStyle = "#161b26"; roundRect(x, y, n.w, n.h, 5); ctx.fill();
+    ctx.strokeStyle = (n.id === hoverId) ? "#fff" : "#f2a65a";
+    ctx.lineWidth = (n.id === hoverId ? 2 : 1) / view.k; ctx.stroke();
+    ctx.fillStyle = "#f2a65a"; ctx.font = "bold 12px sans-serif";
+    ctx.fillText(n.name, x + PAD, y + HEADER / 2);
+    ctx.font = "12px sans-serif";
+    n.methods.forEach((m, i) => {
+      ctx.fillStyle = coverageMode ? (COV_COLOR[m.coverage_state] || COV_COLOR.none) : "#9aa4b8";
+      ctx.fillText(m.name, x + PAD, y + HEADER + LINE / 2 + i * LINE);
+    });
+  }
+  ctx.restore();
+}
+async function renderClasses() {
+  let data; try { data = await (await fetch("classes")).json(); } catch (e) { return; }
+  classMode = true; layerMode = false; selected = null;
+  const HEADER = 20, LINE = 14, PAD = 8, COLGAP = 22, ROWGAP = 22, WRAP = 1100;
+  NODES = []; let x = 0, y = 0, rowH = 0;
+  for (const c of (data.classes || [])) {
+    let w = measureW(c.name) + 20;
+    for (const m of c.methods) w = Math.max(w, measureW(m.name));
+    w += PAD * 2;
+    const h = HEADER + Math.max(1, c.methods.length) * LINE + PAD;
+    if (x + w > WRAP && x > 0) { x = 0; y += rowH + ROWGAP; rowH = 0; }
+    NODES.push({ id: c.id, name: c.name, file: c.file, methods: c.methods, w, h, x: x + w / 2, y: y + h / 2, vx: 0, vy: 0, degree: 1, kind: "class" });
+    x += w + COLGAP; rowH = Math.max(rowH, h);
+  }
+  LINKS = (data.edges || []).map(e => ({ source: e.source, target: e.target, kind: "inherits" }));
+  BY_ID = new Map(NODES.map(n => [n.id, n])); ADJ = new Map(NODES.map(n => [n.id, new Set()]));
+  document.getElementById("stats").textContent = `classes · ${(data.classes || []).length} classes · ${LINKS.length} inheritance`;
+  center(); draw();
+}
+
+// --- Layers view (microservice): interface/business/data/transport bands ---- //
+const LAYER_COLOR = { interface: "#6ea8fe", business: "#a371f7", data: "#7ee787", transport: "#f2a65a" };
+const LAYER_BG = { interface: "rgba(110,168,254,.07)", business: "rgba(163,113,247,.07)", data: "rgba(126,231,135,.07)", transport: "rgba(242,166,90,.07)" };
+function drawLayers() {
+  ctx.clearRect(0, 0, W, H); ctx.save();
+  ctx.translate(view.x, view.y); ctx.scale(view.k, view.k);
+  let minX = 0, maxX = 900;
+  for (const n of NODES) { minX = Math.min(minX, n.x - n.w / 2); maxX = Math.max(maxX, n.x + n.w / 2); }
+  minX -= 14; maxX += 14;
+  for (const b of LAYER_BANDS) {
+    ctx.fillStyle = LAYER_BG[b.layer] || "rgba(139,147,167,.06)";
+    ctx.fillRect(minX, b.y0, maxX - minX, b.y1 - b.y0);
+    ctx.fillStyle = LAYER_COLOR[b.layer] || "#8b93a7"; ctx.font = "bold 13px sans-serif";
+    ctx.textBaseline = "top"; ctx.textAlign = "left";
+    ctx.fillText(`${b.layer.toUpperCase()}  (${b.count})`, minX + 8, b.y0 + 6);
+  }
+  for (const l of LINKS) {                       // cross-layer calls only (clarity)
+    const a = BY_ID.get(l.source), b = BY_ID.get(l.target);
+    if (!a || !b || a.layer === b.layer) continue;
+    drawArrow(a.x, a.y, b.x, b.y, "rgba(150,160,180,.22)");
+  }
+  ctx.textBaseline = "middle"; ctx.textAlign = "left";
+  for (const n of NODES) {
+    const x = n.x - n.w / 2, y = n.y - n.h / 2;
+    ctx.fillStyle = coverageMode ? (COV_COLOR[n.coverage_state] || COV_COLOR.none) : (LAYER_COLOR[n.layer] || "#8b93a7");
+    roundRect(x, y, n.w, n.h, 4); ctx.fill();
+    if (n.endpoint) { ctx.strokeStyle = "#fff"; ctx.lineWidth = 2 / view.k; ctx.stroke(); }
+    else if (n.id === hoverId) { ctx.strokeStyle = "#fff"; ctx.lineWidth = 1.5 / view.k; ctx.stroke(); }
+    ctx.fillStyle = "#0d1117"; ctx.font = "11px sans-serif";
+    ctx.fillText(n.name, x + 5, n.y);
+  }
+  ctx.restore();
+}
+async function renderLayers() {
+  let data; try { data = await (await fetch("layers")).json(); } catch (e) { return; }
+  layerMode = true; classMode = false; selected = null;
+  const note = document.getElementById("view-note");
+  if (data.archetype !== "service")
+    note.textContent = `Layered view is for services — this is a ${data.archetype} (single tier).`;
+  const PADX = 16, PADY = 26, GAP = 10, ROWGAP = 8, BOXH = 20, BANDMIN = 64, WRAP = 1000;
+  NODES = []; LAYER_BANDS = []; let y = 0;
+  for (const L of (data.layers || [])) {
+    let x = PADX, ry = y + PADY;
+    for (const s of L.symbols) {
+      const w = Math.max(40, measureW(s.name) + 12);
+      if (x + w > WRAP && x > PADX) { x = PADX; ry += BOXH + ROWGAP; }
+      NODES.push({ id: s.id, name: s.name, file: s.file, endpoint: s.endpoint, layer: L.layer, w, h: BOXH, x: x + w / 2, y: ry + BOXH / 2, vx: 0, vy: 0, degree: 1, kind: "function" });
+      x += w + GAP;
+    }
+    const bandH = Math.max(BANDMIN, (ry + BOXH + PADY) - y);
+    LAYER_BANDS.push({ layer: L.layer, y0: y, y1: y + bandH, count: L.symbols.length });
+    y += bandH;
+  }
+  LINKS = (data.edges || []).map(e => ({ source: e.source, target: e.target, kind: "calls" }));
+  BY_ID = new Map(NODES.map(n => [n.id, n])); ADJ = new Map(NODES.map(n => [n.id, new Set()]));
+  document.getElementById("stats").textContent = `layers · ${data.archetype} · ${(data.layers || []).length} tier(s)`;
+  center(); draw();
+}
+
+// --- The view picker: one place to choose what you're looking at ----------- //
+const VIEW_NOTE = {
+  force: "Every symbol; drag to explore the raw call/import graph.",
+  overview: "System flow from the main entrypoint (boxes).",
+  modules: "Packages, connected by calls & imports (weighted).",
+  files: "Each file and how it connects.",
+  classes: "Every class, its methods, and inheritance (dashed amber).",
+  layers: "Architectural layers — best for services.",
+  paths: "Pick a test below to see its execution as boxes.",
+};
+function setView(v) {
+  activeView = v;
+  document.querySelectorAll("#views button").forEach(b => b.classList.toggle("active", b.dataset.view === v));
+  if (flowMode) exitFlow();
+  if (focusMode) exitFocus();
+  classMode = false; layerMode = false;
+  document.getElementById("paths-panel").style.display = (v === "paths") ? "block" : "none";
+  document.getElementById("view-note").textContent = VIEW_NOTE[v] || "";
+  const wantModule = (v === "modules" || v === "files");
+  document.getElementById("module-view").checked = wantModule;
+  document.getElementById("map-level-wrap").style.display = wantModule ? "flex" : "none";
+  if (v === "force" || v === "paths") { moduleView = false; MODULES_OVERRIDE = null; render(false); }
+  else if (v === "overview") { enterSystemFlow(); }
+  else if (v === "modules") { moduleView = true; mapLevel = "package"; document.getElementById("map-level").value = "package"; applyModuleMap(); }
+  else if (v === "files") { moduleView = true; mapLevel = "file"; document.getElementById("map-level").value = "file"; applyModuleMap(); }
+  else if (v === "classes") { renderClasses(); }
+  else if (v === "layers") { renderLayers(); }
+}
+
 async function enterFlow(entry) {
   if (focusMode) exitFocus();
   let data;
@@ -647,7 +801,8 @@ async function enterSystemFlow() {
   const spine = data.nodes.filter(n => n.on_spine).length;
   renderLayered(data.nodes, data.edges, `system flow · root ${data.root} · ${data.nodes.length} nodes · ${spine} on spine`);
 }
-document.getElementById("system-flow").addEventListener("click", enterSystemFlow);
+document.querySelectorAll("#views button").forEach(b =>
+  b.addEventListener("click", () => setView(b.dataset.view)));
 
 // Feature 4.12 — where a symbol's parameters flow, as a layered flowchart.
 async function enterData(symbol) {
@@ -660,7 +815,7 @@ async function enterData(symbol) {
 }
 
 function exitFlow() {
-  flowMode = false; traceMode = false;
+  flowMode = false; traceMode = false; classMode = false; layerMode = false;
   document.getElementById("flow-back").style.display = "none";
   document.getElementById("info").innerHTML = `<div class="row">Click a node for details.</div>`;
   render(false);
@@ -918,10 +1073,9 @@ function updateCovNote() {
 }
 
 resize();
-// Land on the high-level block diagram, not the force graph. The force graph is
-// still built (available under "Explore" / "Back to graph"); if there's no
-// inferred entrypoint, enterSystemFlow is a no-op and the graph shows instead.
-load().then(() => enterSystemFlow());
+// Land on the Overview (high-level block diagram) via the view picker. The force
+// graph is still built and is one pick away (View → Force map).
+load().then(() => setView("overview"));
 loadArchitecture();
 loadEntrypoints();
 loadTests();

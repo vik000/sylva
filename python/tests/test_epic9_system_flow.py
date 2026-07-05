@@ -147,7 +147,8 @@ class TestUiAsset:
     def test_system_flow_control_present(self):
         with open(os.path.join(srv.ASSETS_DIR, "index.html")) as f:
             html = f.read()
-        # A top-level control + handler reachable without selecting a node.
-        assert 'id="system-flow"' in html
-        assert "enterSystemFlow" in html and "system-flow" in html
+        # A top-level control + handler reachable without selecting a node:
+        # the "Overview" entry in the view picker calls enterSystemFlow.
+        assert 'data-view="overview"' in html
+        assert "enterSystemFlow" in html
         assert "on_spine" in html  # spine emphasis wired in
