@@ -941,6 +941,37 @@ Make the analysed graph reachable and usable by AI agents (Claude Code, Cursor,
 others) with minimal setup, and surface it for reporting. (GitHub milestone
 "Epic 8 — Reporting & Agent Integration".)
 
+#### Feature 8.1 — Detailed analysis report (issue #40)
+- Description: After a codebase is analysed (walk → extract → write → build_edges
+  → coverage), generate a detailed, human-readable **health/risk report** — the
+  metrics counterpart to Feature 10.1's narrative brief. Pure aggregation over
+  existing query functions (a Python module, like the viz / report brief — no
+  Rust change), so same graph → same report (deterministic, diffable).
+- Inputs: db path, output directory (default `report`)
+- Process — assemble four sections mechanically:
+  - **Architecture** — modules (files + symbol counts), top hubs (by degree),
+    entry points. Reuses Feature 4.3 `get_architecture`.
+  - **Coverage** — per-module rollup (Feature 3.4 `get_module_coverage`), plus
+    lists of uncovered (0%) symbols and never-measured (NULL `coverage_pct`)
+    ones, read via `sqlite3`.
+  - **Risk** — blast radius (Feature 4.2 `blast_radius`) of the top-N hubs:
+    "changing `X` affects N symbols".
+  - **Gaps** — orphan symbols (no inbound/outbound edges), read via `sqlite3`.
+    (Parse errors and unresolved/ambiguous references are not persisted in the
+    graph — noted as a diagnostic pointer, not enumerated; ties to #36/#39.)
+- Outputs: `sylva report --db .codemcp/sylva.db [--out report]` writes
+  `report/REPORT.md` (Markdown) and `report/report.json` (machine-readable);
+  `sylva.report.generate_report(db) -> str` is the testable core.
+- Testing:
+  - General: report has the expected sections for a known graph; blast-radius
+    counts and coverage rollup are correct
+  - Edge: empty DB → a minimal but valid report, not an error; graph with no
+    coverage data → coverage section says so (not zeros)
+  - Deterministic: stable ordering (same graph → identical bytes)
+  - Negative: missing db raises FileNotFoundError
+  - Error control: a section whose query fails degrades to a noted gap, never a
+    crash mid-report
+
 #### Feature 8.2 — Per-project MCP scaffold (agent access) (issue #41)
 - Description: One-step, project-local MCP setup so an agent can query a repo's
   Sylva knowledge graph. **Decision: interpretation (A)** — scaffold config that

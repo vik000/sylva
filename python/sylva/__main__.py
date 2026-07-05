@@ -115,6 +115,10 @@ def main(argv=None):
     dg.add_argument("--db", default=DEFAULT_DB, help=f"Graph database path (default {DEFAULT_DB})")
     dg.add_argument("--out", default="DIAGRAMS.md", help="Output file (default DIAGRAMS.md)")
 
+    rp = sub.add_parser("report", help="Generate a detailed health/risk report (report/REPORT.md)")
+    rp.add_argument("--db", default=DEFAULT_DB, help=f"Graph database path (default {DEFAULT_DB})")
+    rp.add_argument("--out", default="report", help="Output directory (default report)")
+
     ob = sub.add_parser(
         "onboard", help="One command: index + brief + diagrams + MCP scaffold"
     )
@@ -198,6 +202,27 @@ def main(argv=None):
         with open(args.out, "w") as f:
             f.write(md)
         print(f"sylva: wrote diagrams -> {args.out}")
+        return 0
+
+    if args.command == "report":
+        import json as _json
+
+        from .report import generate_report, report_data
+
+        try:
+            md = generate_report(args.db)
+            data = report_data(args.db)
+        except FileNotFoundError as e:
+            print(f"sylva: {e}", file=sys.stderr)
+            return 1
+        os.makedirs(args.out, exist_ok=True)
+        md_path = os.path.join(args.out, "REPORT.md")
+        json_path = os.path.join(args.out, "report.json")
+        with open(md_path, "w") as f:
+            f.write(md)
+        with open(json_path, "w") as f:
+            _json.dump(data, f, indent=2, sort_keys=True)
+        print(f"sylva: wrote report -> {md_path} and {json_path}")
         return 0
 
     if args.command == "expose":

@@ -196,3 +196,249 @@ def generate_brief(db_path):
     )
     out.append("")
     return "\n".join(out)
+
+
+# --------------------------------------------------------------------------- #
+# Feature 8.1 — Detailed analysis report (health/risk metrics)                 #
+# --------------------------------------------------------------------------- #
+
+_TOP_HUBS_FOR_RISK = 5  # blast radius is computed for the N most-connected hubs
+
+
+def _coverage_and_gaps(db_path):
+    """Read coverage buckets + orphan symbols straight from the graph.
+
+    Returns `(has_any_coverage, uncovered, never_measured, orphans)`, each a
+    sorted list of `{name, file, line}` (except the bool). All test code is
+    excluded so the report reflects the real system, not its test suite.
+    """
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT s.name, f.path, s.line_start, s.coverage_pct, "
+            "       (s.id IN (SELECT src_id FROM edges) "
+            "        OR s.id IN (SELECT dst_id FROM edges)) AS connected "
+            "FROM symbols s JOIN files f ON s.file_id = f.id "
+            "WHERE s.kind IN ('function', 'class')"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    has_any = False
+    uncovered, never_measured, orphans = [], [], []
+    for name, path, line, cov, connected in rows:
+        if _is_test_file(path):
+            continue
+        item = {"name": name, "file": path, "line": line}
+        if cov is None:
+            never_measured.append(item)
+        else:
+            has_any = True
+            if cov == 0.0:
+                uncovered.append(item)
+        if not connected:
+            orphans.append(item)
+
+    key = lambda d: (d["file"], d["line"] if d["line"] is not None else 0, d["name"])
+    return (
+        has_any,
+        sorted(uncovered, key=key),
+        sorted(never_measured, key=key),
+        sorted(orphans, key=key),
+    )
+
+
+def report_data(db_path):
+    """Assemble the machine-readable report structure (the `report.json` shape).
+
+    Deterministic: same graph → identical data. Raises FileNotFoundError if the
+    database does not exist. Each section is gathered defensively — a query that
+    fails degrades to an empty/flagged section rather than aborting the report.
+    """
+    if not os.path.exists(db_path):
+        raise FileNotFoundError(f"database not found: {db_path}")
+
+    paths, nsym, _fmods, _fexports = _db_facts(db_path)
+    name = _project_name(paths)
+    n_src_files = len([p for p in paths if not _is_test_file(p)])
+
+    def _safe(fn, default):
+        try:
+            return fn()
+        except Exception as exc:  # a failing section is a noted gap, never fatal
+            _safe.errors.append(str(exc))
+            return default
+
+    _safe.errors = []
+
+    # --- Architecture (4.3) ---
+    arch = _safe(lambda: sylva.get_architecture(db_path), {})
+    modules = sorted(
+        (m for m in arch.get("modules", []) if not _is_test_file(m["path"])),
+        key=lambda m: (-m["symbols"], m["path"]),
+    )
+    hubs = [h for h in arch.get("hubs", []) if not _is_test_file(h.get("file", ""))]
+    entry_points = [
+        e for e in arch.get("entry_points", []) if not _is_test_file(e.get("file", ""))
+    ]
+
+    # --- Coverage (3.4) + gaps ---
+    module_cov_raw = _safe(lambda: sylva.get_module_coverage(db_path), {})
+    module_cov = sorted(
+        (
+            {"module": mod, "coverage": pct}
+            for mod, pct in module_cov_raw.items()
+            if not _is_test_file(mod)
+        ),
+        key=lambda d: (d["module"],),
+    )
+    has_cov, uncovered, never_measured, orphans = _safe(
+        lambda: _coverage_and_gaps(db_path), (False, [], [], [])
+    )
+
+    # --- Risk: blast radius of the top hubs (4.2) ---
+    risk = []
+    for h in hubs[:_TOP_HUBS_FOR_RISK]:
+        affected = _safe(lambda h=h: sylva.blast_radius(db_path, h["name"]), [])
+        risk.append(
+            {
+                "symbol": h["name"],
+                "file": h.get("file", ""),
+                "affected": len(affected),
+            }
+        )
+    risk.sort(key=lambda r: (-r["affected"], r["symbol"]))
+
+    return {
+        "project": name,
+        "symbols": nsym,
+        "source_files": n_src_files,
+        "architecture": {
+            "modules": modules,
+            "hubs": hubs,
+            "entry_points": entry_points,
+        },
+        "coverage": {
+            "measured": has_cov,
+            "modules": module_cov,
+            "uncovered": uncovered,
+            "never_measured": never_measured,
+        },
+        "risk": risk,
+        "gaps": {"orphans": orphans},
+        "errors": _safe.errors,
+    }
+
+
+def _fmt_list(items, empty="_none_"):
+    return ", ".join(f"`{i}`" for i in items) if items else empty
+
+
+def generate_report(db_path):
+    """Return a deterministic markdown health/risk report for `db_path`.
+
+    The metrics counterpart to `generate_brief`: architecture, coverage gaps,
+    change-risk (blast radius), and structural gaps (orphans). Raises
+    FileNotFoundError if the database does not exist.
+    """
+    d = report_data(db_path)
+    out = []
+    out.append(f"# {d['project']} — Analysis Report")
+    out.append("")
+    out.append(
+        "> Auto-generated by Sylva from the code graph (deterministic — regenerate "
+        "with `sylva report`). Health & risk metrics for this codebase."
+    )
+    out.append("")
+    out.append(
+        f"- **Symbols:** {d['symbols']} function(s)/class(es) across "
+        f"{d['source_files']} source file(s) (tests excluded)"
+    )
+    out.append("")
+
+    # --- Architecture ---
+    arch = d["architecture"]
+    out.append("## Architecture")
+    if arch["modules"]:
+        out.append("")
+        out.append("| Module | Symbols |")
+        out.append("| --- | ---: |")
+        for m in arch["modules"][:15]:
+            out.append(f"| `{m['path']}` | {m['symbols']} |")
+    else:
+        out.append("- _no modules indexed_")
+    out.append("")
+    out.append(
+        "- **Top hubs (by degree):** "
+        + _fmt_list(f"{h['name']} ({h['degree']})" for h in arch["hubs"][:8])
+    )
+    out.append(
+        "- **Entry points:** "
+        + _fmt_list(e["name"] for e in arch["entry_points"][:8])
+    )
+    out.append("")
+
+    # --- Coverage ---
+    cov = d["coverage"]
+    out.append("## Coverage")
+    if not cov["measured"]:
+        out.append(
+            "- No coverage data in the graph. Run coverage and `apply_coverage` "
+            "to populate it (see Epic 3)."
+        )
+    else:
+        out.append("")
+        out.append("| Module | Coverage |")
+        out.append("| --- | ---: |")
+        for m in cov["modules"]:
+            out.append(f"| `{m['module']}` | {m['coverage']:.0f}% |")
+        out.append("")
+        un = cov["uncovered"]
+        out.append(
+            f"- **Uncovered (0%) symbols ({len(un)}):** "
+            + _fmt_list(i["name"] for i in un[:20])
+            + (f" _(+{len(un) - 20} more)_" if len(un) > 20 else "")
+        )
+    nm = cov["never_measured"]
+    out.append(
+        f"- **Never-measured symbols ({len(nm)}):** "
+        + _fmt_list(i["name"] for i in nm[:20])
+        + (f" _(+{len(nm) - 20} more)_" if len(nm) > 20 else "")
+    )
+    out.append("")
+
+    # --- Risk ---
+    out.append("## Risk (change blast radius)")
+    if d["risk"]:
+        for r in d["risk"]:
+            out.append(
+                f"- Changing `{r['symbol']}` affects **{r['affected']}** symbol(s)"
+            )
+    else:
+        out.append("- _no hubs to assess (no call/import edges)_")
+    out.append("")
+
+    # --- Gaps ---
+    orphans = d["gaps"]["orphans"]
+    out.append("## Gaps")
+    out.append(
+        f"- **Orphan symbols — no inbound/outbound edges ({len(orphans)}):** "
+        + _fmt_list(i["name"] for i in orphans[:20])
+        + (f" _(+{len(orphans) - 20} more)_" if len(orphans) > 20 else "")
+    )
+    out.append(
+        "- _Parse errors and unresolved/ambiguous references are not persisted "
+        "in the graph; run indexing with `SYLVA_LOG` for edge-resolution "
+        "diagnostics._"
+    )
+    if d["errors"]:
+        out.append(
+            f"- **Report warnings:** {len(d['errors'])} section(s) degraded — "
+            + _fmt_list(d["errors"])
+        )
+    out.append("")
+
+    out.append("---")
+    out.append("_Generated by Sylva. Re-run `sylva report` after re-indexing._")
+    out.append("")
+    return "\n".join(out)
