@@ -1190,3 +1190,46 @@ Precedes Epic 10 (skills). (GitHub milestone "Epic 9 …".)
   (library branch). Sequenced after the resolution-fidelity work (7.10/5.0) so
   layers are inferred over a denser, more accurate graph. Cheap subset first;
   richer per-framework rules can follow.
+
+---
+
+### Epic 10 — Agent Skills (optional, installable)
+
+Optional, installable skills that let an LLM agent do the semantic synthesis
+static analysis can't — using Sylva's now-rich MCP surface (Epics 1–9) as
+substrate and **persisting results back**. Sylva stays deterministic and never
+runs an LLM itself; the skills orchestrate the agent side. (GitHub milestone
+"Epic 10 …".)
+
+#### Feature 10.1 — instruction-set skill (project brief generation) (issue #61)
+- Description: Generate a persistent **project instruction brief** (an
+  `AGENTS.md` / CLAUDE-style doc): the inferred entrypoint(s), archetype +
+  layers, main flow/spine, module boundaries, key hubs/chokepoints, and how to
+  run/test — bootstrapped from Sylva's graph. The distilled "how this system
+  works" that every future agent session reuses.
+- **Shape (decided): a deterministic generator core + a thin skill wrapper.**
+  `sylva.report.generate_brief(db) -> markdown` assembles the brief *mechanically*
+  from the Epic 9 analysis (testable, reproducible, on-ethos); a Claude Code
+  skill / `sylva brief` CLI invokes it and (optionally) lets the agent enrich the
+  prose. Sylva provides the deterministic substrate; the agent narration is an
+  optional layer, not required for the core.
+- Inputs: db path, output path (default `AGENTS.md` / `SYLVA.md`)
+- Process (deterministic, reuses existing analysis — no new graph logic):
+  - Archetype + layers (9.8), primary + ranked entrypoints (9.1/9.1.1), main
+    spine (9.2), hubs + chokepoints/gateways (4.3 / 9.3), module & package map
+    (4.6/4.7), foreign boundaries (5.0), and how-to-run (console_scripts / main
+    from the entrypoint markers). Pull module/symbol docstrings for purpose hints.
+  - Render a structured markdown brief with stable section ordering.
+  - `sylva brief --db … [--out AGENTS.md]` writes it; the skill file documents
+    invocation + optional agent enrichment.
+- Outputs: a written `AGENTS.md`-style brief; a `brief` CLI subcommand; a skill
+  definition that invokes it
+- Testing:
+  - General: `generate_brief` produces markdown referencing the inferred primary
+    entrypoint, archetype, and top modules for a known repo
+  - Idempotent / regenerable (same graph → same brief)
+  - Edge: empty graph → a minimal, valid brief (no crash)
+  - Negative: db not found raises
+- Note: highest-leverage skill. Depends on Epic 9 (esp. 9.1/9.8). No Rust change
+  — pure Python report assembly over the existing analysis functions. The
+  deterministic core is the product; the "skill" is the convenient invocation.

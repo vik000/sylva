@@ -143,6 +143,10 @@ def main(argv=None):
     im.add_argument("--db", default=DEFAULT_DB, help=f"Graph database path (default {DEFAULT_DB})")
     im.add_argument("--out", default=".codemcp", help="Output directory (default .codemcp)")
 
+    br = sub.add_parser("brief", help="Generate a project instruction brief (SYLVA.md)")
+    br.add_argument("--db", default=DEFAULT_DB, help=f"Graph database path (default {DEFAULT_DB})")
+    br.add_argument("--out", default="SYLVA.md", help="Output file (default SYLVA.md)")
+
     args = parser.parse_args(argv)
 
     # Bare `sylva` (no command): show the quickstart + available commands, then
@@ -186,6 +190,19 @@ def main(argv=None):
             return 1
         print(f"sylva: wrote MCP scaffold -> {cfg}")
         print("sylva: add its contents to your Claude Code / MCP client config to query this codebase.")
+        return 0
+
+    if args.command == "brief":
+        from .report import generate_brief
+
+        try:
+            md = generate_brief(args.db)
+        except FileNotFoundError as e:
+            print(f"sylva: {e}", file=sys.stderr)
+            return 1
+        with open(args.out, "w") as f:
+            f.write(md)
+        print(f"sylva: wrote project brief -> {args.out}")
         return 0
 
     parser.error(f"unknown command: {args.command}")  # unreachable via argparse
