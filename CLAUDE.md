@@ -1308,6 +1308,37 @@ Precedes Epic 10 (skills). (GitHub milestone "Epic 9 …".)
   layers are inferred over a denser, more accurate graph. Cheap subset first;
   richer per-framework rules can follow.
 
+#### Feature 9.7 — Entrypoint inference for libraries (no single main) (issue #67)
+- Description: Feature 9.1/9.1.1 designates a single **primary** entrypoint —
+  great for applications, but **libraries have no single main** (Flask's inferred
+  primary was `shell_command`, a defensible-but-arbitrary CLI pick). For a
+  library, the real "entrypoints" are its **public API surface**, of which there
+  are many. Detect the library archetype and rank the public API instead of
+  forcing one arbitrary primary.
+- Inputs: db path (same `infer_entrypoints` surface)
+- Process (extend `infer_entrypoints`; **cheap subset**):
+  - **Library signal (from the markers it already computes):** no run marker
+    (`main`/`main_guard`/`cli`/`console_script`) and no `web_route` marker ⇒
+    library.
+  - **Public API surface (cheap subset):** public (non-`_`) **top-level**
+    `function`/`class` symbols (methods excluded via class-span containment,
+    reusing the 7.10 pattern). Mark them `marker_kind = "public_api"` so they are
+    boosted candidates, ranked by reachability. Richer precision (`__all__` and
+    `__init__.py` re-exports) is a follow-up.
+  - Add an **`is_library`** boolean to every returned entry (the repo archetype),
+    non-breaking (existing consumers ignore the extra key).
+- Outputs: on a library, the public API ranks as the entrypoints (a sensible
+  primary + set), each entry flagged `is_library`; applications unchanged
+- Testing:
+  - Library (public fns/classes, no main/framework) → they are the entrypoints,
+    `marker_kind='public_api'`, `is_library=True`
+  - `_private` / methods excluded from the public API
+  - Application with a clear `main` → unchanged (`is_library=False`, main primary)
+  - Empty graph → empty; db not found raises
+- Note: refines 9.1/9.1.1; feeds 9.4 (system flow) + 9.5 (sidebar) so libraries
+  get a meaningful root. Reuses the marker + class-membership machinery; no new
+  surface. `__all__` / re-export precision deferred.
+
 ---
 
 ### Epic 10 — Agent Skills (optional, installable)

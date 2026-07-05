@@ -94,7 +94,9 @@ class TestRankingAndPrimary:
         _index(db, tmp_path / "m.py", src)
         sylva.build_edges(str(db))
         result = _entries(db)
-        assert all(e["is_marker"] is False for e in result)
+        # 9.7: a library (no main/framework) marks its public API; the deeper
+        # function still ranks first (by reachability, among the markers).
+        assert all(e["marker_kind"] == "public_api" for e in result)
         ranked = [e["symbol"] for e in result]
         assert ranked.index("big") < ranked.index("small")
         assert _by_name(result)["big"]["primary"] is True

@@ -150,7 +150,11 @@ class TestPreserves91:
         )
         sylva.build_edges(str(db))
         m = _markers(db)
-        assert "util" not in m and "memoized" not in m  # not entrypoints
+        # `@staticmethod` / `@functools.cache` are not framework (route/cli)
+        # markers. In this library-shaped repo (no main) they may surface as 9.7
+        # `public_api` entries, but never as web_route/cli.
+        assert m.get("util") in (None, "public_api")
+        assert m.get("memoized") in (None, "public_api")
 
 
 class TestPrimaryOnFrameworkApp:

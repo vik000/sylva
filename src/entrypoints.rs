@@ -32,6 +32,7 @@ struct Sym {
     kind: String,
     path: String,
     line: Option<i64>,
+    line_end: Option<i64>,
 }
 
 fn node_text(node: Node, src: &[u8]) -> String {
@@ -283,7 +284,7 @@ pub fn infer_entrypoints(py: Python<'_>, db_path: &str) -> PyResult<Py<PyList>> 
     let syms: Vec<Sym> = {
         let mut stmt = conn
             .prepare(
-                "SELECT s.id, s.name, s.kind, f.path, s.line_start \
+                "SELECT s.id, s.name, s.kind, f.path, s.line_start, s.line_end \
                  FROM symbols s JOIN files f ON f.id = s.file_id",
             )
             .map_err(|e| PyRuntimeError::new_err(format!("failed to read symbols: {}", e)))?;
@@ -295,6 +296,7 @@ pub fn infer_entrypoints(py: Python<'_>, db_path: &str) -> PyResult<Py<PyList>> 
                     kind: r.get(2)?,
                     path: r.get(3)?,
                     line: r.get(4)?,
+                    line_end: r.get(5)?,
                 })
             })
             .map_err(|e| PyRuntimeError::new_err(format!("failed to read symbols: {}", e)))?;
@@ -413,6 +415,38 @@ pub fn infer_entrypoints(py: Python<'_>, db_path: &str) -> PyResult<Py<PyList>> 
         }
     }
 
+    // --- Feature 9.7: library archetype → mark the public API surface --------
+    // A library has no run/web entrypoint marker; its "entrypoints" are its
+    // public (non-`_`) top-level functions/classes (methods excluded).
+    let has_run = markers
+        .values()
+        .any(|&k| matches!(k, "main" | "main_guard" | "cli" | "console_script"));
+    let has_web = markers.values().any(|&k| k == "web_route");
+    let is_library = !has_run && !has_web;
+    if is_library {
+        let class_spans: Vec<(&str, i64, i64)> = syms
+            .iter()
+            .filter(|s| s.kind == "class")
+            .filter_map(|s| Some((s.path.as_str(), s.line?, s.line_end?)))
+            .collect();
+        let is_method = |s: &Sym| -> bool {
+            match s.line {
+                Some(ls) => class_spans
+                    .iter()
+                    .any(|&(cp, cstart, cend)| cp == s.path && cstart < ls && ls <= cend),
+                None => false,
+            }
+        };
+        for s in &syms {
+            let is_def = s.kind == "function" || s.kind == "class";
+            let public_toplevel =
+                !s.name.starts_with('_') && !(s.kind == "function" && is_method(s));
+            if is_def && public_toplevel {
+                markers.entry(s.id).or_insert("public_api");
+            }
+        }
+    }
+
     // --- Root SCCs (zero in-degree in the condensed DAG) ----------------------
     // Node set = definition symbols (call graph endpoints).
     let def_ids: Vec<i64> = syms
@@ -494,6 +528,7 @@ pub fn infer_entrypoints(py: Python<'_>, db_path: &str) -> PyResult<Py<PyList>> 
         d.set_item("marker_kind", markers.get(id).copied())?;
         d.set_item("rank", rank + 1)?;
         d.set_item("primary", rank == 0)?;
+        d.set_item("is_library", is_library)?; // Feature 9.7 — repo archetype
         list.append(d)?;
     }
     Ok(list.unbind())
