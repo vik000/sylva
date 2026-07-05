@@ -28,6 +28,7 @@
 //! - `trace_calls` / `blast_radius` / `get_architecture` — graph traversal (Feature 8.2)
 //! - `infer_entrypoints` (no params) — ranked global entrypoints (Feature 9.1)
 //! - `main_spine` (params: entry?) — longest execution path from an entrypoint (Feature 9.2)
+//! - `infer_layers` (no params) — archetype + per-symbol architectural layer (Feature 9.8)
 //! - `get_source` (params: name, or file+start+end) — current source of a symbol (Feature 8.4)
 //!
 //! `get_callers` / `get_dependencies` read the `edges` table, which is not yet
@@ -325,6 +326,9 @@ fn tools_list() -> Value {
               "type": "object",
               "properties": { "entry": { "type": "string", "description": "Entry symbol (default: inferred primary)" } }
           }) },
+        // Feature 9.8 — project archetype + per-symbol architectural layers.
+        { "name": "infer_layers", "description": "Project archetype (library/application/service) + per-symbol architectural layer (interface/transport/data/business).",
+          "inputSchema": json!({ "type": "object", "properties": {} }) },
         // Feature 8.4 — fetch a symbol's (or a range's) current source code.
         { "name": "get_source", "description": "Fetch the current source code of a symbol, or an explicit file range.",
           "inputSchema": json!({
@@ -475,6 +479,9 @@ fn dispatch_tool(
                 .map(|r| py_to_json(r.bind(py)))
                 .map_err(|e| pyerr_to_rpc(py, e))
         }
+        "infer_layers" => crate::layers::infer_layers(py, db_path)
+            .map(|r| py_to_json(r.bind(py)))
+            .map_err(|e| pyerr_to_rpc(py, e)),
         other => Err((METHOD_NOT_FOUND, format!("Unknown tool: {}", other))),
     }
 }

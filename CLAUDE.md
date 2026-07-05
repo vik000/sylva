@@ -1125,3 +1125,41 @@ Precedes Epic 10 (skills). (GitHub milestone "Epic 9 …".)
   is closed with the decision.
 - Note: sequence right after 9.4 (which exposed the scale problem) and before
   investing further in the layered views.
+
+#### Feature 9.8 — Project archetype + architectural layer inference (issue #68)
+- Description: Infer the project's **archetype** and, for services, decompose the
+  code into **architectural layers** — a *semantic* grouping above files/dirs.
+  Complements the entrypoint/spine/flow work with "which tier does this belong
+  to". Deterministic, no LLM.
+  - **Library** (public API, `__all__`, no service framework) → treat as-is
+    (ties to 9.7); no layer split forced.
+  - **Application / microservice** → tag each symbol with a layer:
+    **interface** (routes/CLI/controllers — largely the 9.1.1 markers),
+    **transport** (HTTP clients, message brokers/queues, RPC),
+    **data** (ORM models, repositories, DB/cache clients),
+    **business** (everything else — the default).
+- Inputs: db path
+- Process (deterministic heuristics; **cheap subset first**, like 9.1.1):
+  - **Archetype detection** by imports/markers: a web framework + routes, or
+    queue/RPC clients ⇒ service; `__all__` / rich `__init__` re-exports and no
+    service framework ⇒ library.
+  - **Layer classification** by the module families a symbol's *file* imports
+    (e.g. imports `sqlalchemy`/`psycopg`/`redis` → data; `flask`/`fastapi` +
+    route decorator → interface; `httpx`/`requests`/`kafka`/`celery` →
+    transport) plus the 9.1.1 decorator markers; genuinely ambiguous → the
+    `business` default (never guess).
+  - Data-layer first (like 4.6/4.10): emit an inferred `layer` per symbol so it's
+    testable without rendering. Viz banding (render the system flow in horizontal
+    tiers) is a follow-on, not required for this feature's core.
+- Outputs: `infer_layers(db) -> {archetype, layers: {symbol -> layer}}` (or a
+  per-symbol `layer` tag); exposed via MCP; consumable by the viz for banding.
+- Testing:
+  - Service: a route handler → `interface`; a sqlalchemy model/user → `data`; an
+    httpx/requests caller → `transport`; a plain helper → `business`
+  - Library: `__all__` + no framework → `archetype='library'`, no forced layering
+  - Ambiguous/unknown imports → `business` default, not misclassified
+  - Empty graph handled; db not found raises
+- Note: complements 4.6/4.7 (clustering), 9.1.1 (markers = interface), 9.7
+  (library branch). Sequenced after the resolution-fidelity work (7.10/5.0) so
+  layers are inferred over a denser, more accurate graph. Cheap subset first;
+  richer per-framework rules can follow.
