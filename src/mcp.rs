@@ -27,6 +27,7 @@
 //! - `get_test_coverage` (params: name) — tests that exercise a symbol (Feature 3.5)
 //! - `trace_calls` / `blast_radius` / `get_architecture` — graph traversal (Feature 8.2)
 //! - `infer_entrypoints` (no params) — ranked global entrypoints (Feature 9.1)
+//! - `main_spine` (params: entry?) — longest execution path from an entrypoint (Feature 9.2)
 //! - `get_source` (params: name, or file+start+end) — current source of a symbol (Feature 8.4)
 //!
 //! `get_callers` / `get_dependencies` read the `edges` table, which is not yet
@@ -318,6 +319,12 @@ fn tools_list() -> Value {
         // Feature 9.1 — inferred, ranked global entrypoints (markers + dominance).
         { "name": "infer_entrypoints", "description": "Inferred, ranked program entrypoints (primary first).",
           "inputSchema": json!({ "type": "object", "properties": {} }) },
+        // Feature 9.2 — the main execution spine (longest path from an entrypoint).
+        { "name": "main_spine", "description": "The main execution spine: the longest call path from an entrypoint (default: the primary).",
+          "inputSchema": json!({
+              "type": "object",
+              "properties": { "entry": { "type": "string", "description": "Entry symbol (default: inferred primary)" } }
+          }) },
         // Feature 8.4 — fetch a symbol's (or a range's) current source code.
         { "name": "get_source", "description": "Fetch the current source code of a symbol, or an explicit file range.",
           "inputSchema": json!({
@@ -462,6 +469,12 @@ fn dispatch_tool(
         "infer_entrypoints" => crate::entrypoints::infer_entrypoints(py, db_path)
             .map(|r| py_to_json(r.bind(py)))
             .map_err(|e| pyerr_to_rpc(py, e)),
+        "main_spine" => {
+            let entry = args.get("entry").and_then(Value::as_str);
+            crate::spine::main_spine(py, db_path, entry)
+                .map(|r| py_to_json(r.bind(py)))
+                .map_err(|e| pyerr_to_rpc(py, e))
+        }
         other => Err((METHOD_NOT_FOUND, format!("Unknown tool: {}", other))),
     }
 }

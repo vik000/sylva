@@ -38,60 +38,7 @@ fn node_text(node: Node, src: &[u8]) -> String {
     node.utf8_text(src).unwrap_or("").to_string()
 }
 
-/// Iterative Tarjan SCC — returns an SCC id per node (0-based, dense). Iterative
-/// so a deep call graph can't overflow the stack.
-fn tarjan_scc(n: usize, adj: &[Vec<usize>]) -> Vec<usize> {
-    const UNSET: usize = usize::MAX;
-    let mut index = vec![UNSET; n];
-    let mut low = vec![0usize; n];
-    let mut on_stack = vec![false; n];
-    let mut comp = vec![UNSET; n];
-    let mut stack: Vec<usize> = Vec::new();
-    let mut next_index = 0usize;
-    let mut next_comp = 0usize;
-
-    for start in 0..n {
-        if index[start] != UNSET {
-            continue;
-        }
-        let mut work: Vec<(usize, usize)> = vec![(start, 0)]; // (node, next child)
-        while let Some(&(v, ci)) = work.last() {
-            if ci == 0 {
-                index[v] = next_index;
-                low[v] = next_index;
-                next_index += 1;
-                stack.push(v);
-                on_stack[v] = true;
-            }
-            if ci < adj[v].len() {
-                let w = adj[v][ci];
-                work.last_mut().unwrap().1 += 1;
-                if index[w] == UNSET {
-                    work.push((w, 0));
-                } else if on_stack[w] {
-                    low[v] = low[v].min(index[w]);
-                }
-            } else {
-                if low[v] == index[v] {
-                    loop {
-                        let w = stack.pop().unwrap();
-                        on_stack[w] = false;
-                        comp[w] = next_comp;
-                        if w == v {
-                            break;
-                        }
-                    }
-                    next_comp += 1;
-                }
-                work.pop();
-                if let Some(&(parent, _)) = work.last() {
-                    low[parent] = low[parent].min(low[v]);
-                }
-            }
-        }
-    }
-    comp
-}
+use crate::graph::tarjan_scc;
 
 /// Callee names for every call site under `node` (identifier or attribute name),
 /// used to resolve what an `if __name__ == "__main__"` guard invokes.

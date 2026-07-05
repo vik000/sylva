@@ -13,8 +13,10 @@ mod db;
 mod edges;
 mod entrypoints;
 mod extractor;
+mod graph;
 mod hash;
 mod mcp;
+mod spine;
 mod testmap;
 mod walker;
 mod watcher;
@@ -45,5 +47,6 @@ fn sylva(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(edges::blast_radius, m)?)?;
     m.add_function(wrap_pyfunction!(architecture::get_architecture, m)?)?;
     m.add_function(wrap_pyfunction!(entrypoints::infer_entrypoints, m)?)?;
+    m.add_function(wrap_pyfunction!(spine::main_spine, m)?)?;
     Ok(())
 }
