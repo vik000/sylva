@@ -59,11 +59,12 @@ class TestUnsupportedExtension:
         path = _write(tmp_path, "notes.txt", "def looks_like_python(): pass\n")
         assert sylva.extract_symbols(path) == []
 
-    def test_rust_not_full_parsed_here(self, tmp_path):
-        # .rs is handled by the separate foreign export-surface extractor (5.0),
-        # not the full-parse trait — extract_symbols yields nothing for it.
-        path = _write(tmp_path, "lib.rs", "fn main() {}\n")
+    def test_unregistered_language_returns_empty(self, tmp_path):
+        # A language with no registered extractor (e.g. Go) → [] (not an error).
+        # (Python is 5.1; Rust was added in 5.2.)
+        path = _write(tmp_path, "main.go", "package main\nfunc main() {}\n")
         assert sylva.extract_symbols(path) == []
+        assert "go" not in sylva.list_languages()
 
 
 class TestRobustness:

@@ -230,10 +230,106 @@ impl Extractor for PythonExtractor {
     }
 }
 
+/// Leading `///` doc comments immediately preceding a Rust item (skipping any
+/// attributes between the doc and the item), joined — the Rust analog of a
+/// docstring.
+fn rust_doc(item: Node, src: &[u8]) -> Option<String> {
+    let mut lines: Vec<String> = Vec::new();
+    let mut prev = item.prev_sibling();
+    while let Some(p) = prev {
+        match p.kind() {
+            "line_comment" => {
+                let trimmed = node_text(p, src).trim_start().to_string();
+                if let Some(rest) = trimmed.strip_prefix("///") {
+                    lines.push(rest.trim().to_string());
+                } else {
+                    break; // an inner (`//!`) or ordinary comment ends the block
+                }
+            }
+            "attribute_item" => {} // e.g. `#[derive(...)]` between doc and item
+            _ => break,
+        }
+        prev = p.prev_sibling();
+    }
+    if lines.is_empty() {
+        None
+    } else {
+        lines.reverse();
+        Some(lines.join("\n"))
+    }
+}
+
+/// Depth-first walk collecting Rust definitions (functions incl. impl methods,
+/// structs, enums, traits) at any nesting level. `err_line` records the earliest
+/// ERROR/MISSING line for the shared error sentinel.
+fn collect_rust(node: Node, src: &[u8], out: &mut Vec<Symbol>, err_line: &mut Option<usize>) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.is_error() || child.is_missing() {
+            let line = child.start_position().row + 1;
+            *err_line = Some(err_line.map_or(line, |e| e.min(line)));
+        }
+        let kind = match child.kind() {
+            // `function_item` = with a body; `function_signature_item` = a trait
+            // method declaration (no body).
+            "function_item" | "function_signature_item" => Some("function"),
+            "struct_item" => Some("struct"),
+            "enum_item" => Some("enum"),
+            "trait_item" => Some("trait"),
+            _ => None,
+        };
+        if let Some(k) = kind {
+            if let Some(name) = child.child_by_field_name("name") {
+                out.push(Symbol {
+                    name: node_text(name, src),
+                    kind: k,
+                    line: child.start_position().row + 1,
+                    line_end: child.end_position().row + 1,
+                    docstring: rust_doc(child, src),
+                    import_module: None,
+                    import_name: None,
+                });
+            }
+        }
+        // Recurse: impl-block methods, nested modules, and inner items.
+        collect_rust(child, src, out, err_line);
+    }
+}
+
+/// The Rust extractor (tree-sitter-rust). Extracts fns, structs, enums, and
+/// traits; impl-block methods are captured as functions. `use` imports are not
+/// yet extracted (low value while `.rs` is black-boxed in the analyze pipeline —
+/// Feature 5.0).
+struct RustExtractor;
+
+impl Extractor for RustExtractor {
+    fn language(&self) -> &'static str {
+        "rust"
+    }
+    fn extensions(&self) -> &'static [&'static str] {
+        &["rs"]
+    }
+    fn extract(&self, source: &str) -> ExtractResult {
+        let src = source.as_bytes();
+        let mut parser = Parser::new();
+        if parser.set_language(&tree_sitter_rust::LANGUAGE.into()).is_err() {
+            return ExtractResult { symbols: Vec::new(), error_line: Some(1) };
+        }
+        let tree = match parser.parse(src, None) {
+            Some(t) => t,
+            None => return ExtractResult { symbols: Vec::new(), error_line: Some(1) },
+        };
+        let mut symbols = Vec::new();
+        let mut err_line = None;
+        collect_rust(tree.root_node(), src, &mut symbols, &mut err_line);
+        ExtractResult { symbols, error_line: err_line }
+    }
+}
+
 /// The registered extractors. A fixed table — registration is inherently
 /// idempotent (a language appears once).
 fn registry() -> Vec<Box<dyn Extractor>> {
-    vec![Box::new(PythonExtractor)]
+    vec![Box::new(PythonExtractor), Box::new(RustExtractor)]
 }
 
 /// The extractor handling `ext` (extension without the dot), if any.
