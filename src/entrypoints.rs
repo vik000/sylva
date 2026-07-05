@@ -23,7 +23,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use rusqlite::Connection;
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tree_sitter::{Node, Parser};
 
 struct Sym {
@@ -144,6 +144,181 @@ fn find_main_guards(
     }
 }
 
+// --------------------------------------------------------------------------- //
+// Feature 9.1.1 — framework markers (decorators + declarative console_scripts)
+// --------------------------------------------------------------------------- //
+
+/// Map a decorator to an entrypoint marker kind by its method name (framework-
+/// agnostic): `route`/`get`/`post`/… → `web_route` (Flask/FastAPI); `command`/
+/// `group`/`callback` → `cli` (click/typer). Unknown decorators → None (ignored).
+fn decorator_marker_kind(decorator: Node, src: &[u8]) -> Option<&'static str> {
+    let mut c = decorator.walk();
+    let expr = decorator.named_children(&mut c).next()?; // the expression after '@'
+    let method = match expr.kind() {
+        "call" => {
+            let f = expr.child_by_field_name("function")?;
+            match f.kind() {
+                "attribute" => f.child_by_field_name("attribute").map(|a| node_text(a, src)),
+                "identifier" => Some(node_text(f, src)),
+                _ => None,
+            }
+        }
+        "attribute" => expr.child_by_field_name("attribute").map(|a| node_text(a, src)),
+        "identifier" => Some(node_text(expr, src)),
+        _ => None,
+    }?;
+    match method.as_str() {
+        "route" | "get" | "post" | "put" | "delete" | "patch" | "head" | "options"
+        | "websocket" => Some("web_route"),
+        "command" | "group" | "callback" => Some("cli"),
+        _ => None,
+    }
+}
+
+/// Record decorated functions whose decorator marks a framework entrypoint.
+fn scan_decorators(
+    node: Node,
+    src: &[u8],
+    path: &str,
+    sym_by_pos: &HashMap<(String, i64), i64>,
+    markers: &mut HashMap<i64, &'static str>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "decorated_definition" {
+            if let Some(def) = child.child_by_field_name("definition") {
+                if def.kind() == "function_definition" {
+                    let line = def.start_position().row as i64 + 1;
+                    if let Some(&id) = sym_by_pos.get(&(path.to_string(), line)) {
+                        let mut dc = child.walk();
+                        for deco in child.children(&mut dc) {
+                            if deco.kind() == "decorator" {
+                                if let Some(kind) = decorator_marker_kind(deco, src) {
+                                    markers.entry(id).or_insert(kind);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        scan_decorators(child, src, path, sym_by_pos, markers);
+    }
+}
+
+/// Does `file_path` correspond to the dotted `module`? (`pkg.mod` matches
+/// `.../pkg/mod.py`; `pkg` matches `.../pkg/__init__.py`.) For disambiguating a
+/// `console_scripts` target among same-named functions.
+fn file_matches_module(file_path: &str, module: &str) -> bool {
+    let stripped = file_path.strip_suffix(".py").unwrap_or(file_path);
+    let mut path_comps: Vec<&str> =
+        stripped.split(['/', '\\']).filter(|c| !c.is_empty() && *c != ".").collect();
+    if path_comps.last() == Some(&"__init__") {
+        path_comps.pop();
+    }
+    let mod_comps: Vec<&str> = module.split('.').filter(|c| !c.is_empty()).collect();
+    !mod_comps.is_empty() && path_comps.ends_with(&mod_comps)
+}
+
+/// Longest shared leading path of two directories.
+fn common_prefix(a: &Path, b: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for (x, y) in a.components().zip(b.components()) {
+        if x == y {
+            out.push(x.as_os_str());
+        } else {
+            break;
+        }
+    }
+    out
+}
+
+/// The nearest ancestor of the indexed files that holds a `pyproject.toml` or
+/// `setup.cfg` — the project root where `console_scripts` are declared.
+fn find_project_root(files: &[String]) -> Option<PathBuf> {
+    let mut common: Option<PathBuf> = None;
+    for f in files {
+        let dir = Path::new(f).parent().unwrap_or_else(|| Path::new("")).to_path_buf();
+        common = Some(match common {
+            None => dir,
+            Some(c) => common_prefix(&c, &dir),
+        });
+    }
+    let mut dir = common;
+    let mut hops = 0;
+    while let Some(d) = dir {
+        if d.join("pyproject.toml").is_file() || d.join("setup.cfg").is_file() {
+            return Some(d);
+        }
+        hops += 1;
+        if hops > 40 {
+            return None;
+        }
+        dir = d.parent().map(Path::to_path_buf);
+    }
+    None
+}
+
+/// Parse a TOML script table (`[project.scripts]` / `[tool.poetry.scripts]`):
+/// each `name = "module:function"` yields `(Some(module), function)`. A small
+/// hand parser (no toml dependency); malformed lines are skipped.
+fn parse_toml_scripts(text: &str, section: &str, out: &mut Vec<(Option<String>, String)>) {
+    let mut in_section = false;
+    for line in text.lines() {
+        let t = line.trim();
+        if t.starts_with('[') {
+            in_section = t == section;
+            continue;
+        }
+        if !in_section || t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        if let Some(eq) = t.find('=') {
+            let value = t[eq + 1..].trim().trim_matches(['"', '\'']);
+            if let Some((module, func)) = value.split_once(':') {
+                let func = func.split_whitespace().next().unwrap_or(func);
+                if !func.is_empty() {
+                    out.push((Some(module.to_string()), func.to_string()));
+                }
+            }
+        }
+    }
+}
+
+/// Parse `console_scripts` under `[options.entry_points]` in setup.cfg (indented
+/// `name = module:function` continuation lines).
+fn parse_setup_cfg_console_scripts(text: &str, out: &mut Vec<(Option<String>, String)>) {
+    let mut in_entry_points = false;
+    let mut in_console = false;
+    for line in text.lines() {
+        let t = line.trim();
+        if t.starts_with('[') {
+            in_entry_points = t == "[options.entry_points]";
+            in_console = false;
+            continue;
+        }
+        if !in_entry_points {
+            continue;
+        }
+        let indented = line.starts_with([' ', '\t']);
+        if !indented {
+            // A key at section level (e.g. `console_scripts =`).
+            in_console = t.split_once('=').map_or(false, |(k, _)| k.trim() == "console_scripts");
+            continue;
+        }
+        if in_console && !t.is_empty() && !t.starts_with('#') {
+            if let Some((_name, value)) = t.split_once('=') {
+                if let Some((module, func)) = value.trim().split_once(':') {
+                    let func = func.split_whitespace().next().unwrap_or(func);
+                    if !func.is_empty() {
+                        out.push((Some(module.to_string()), func.to_string()));
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Infer and rank the program's entrypoints. Returns a ranked list of dicts:
 /// `{symbol, file, reachable, is_marker, marker_kind, rank, primary}`.
 #[pyfunction]
@@ -253,6 +428,42 @@ pub fn infer_entrypoints(py: Python<'_>, db_path: &str) -> PyResult<Py<PyList>> 
         }
         // `if __name__ == "__main__":` guards.
         find_main_guards(root, src, &defs_by_name, &mut markers);
+        // Feature 9.1.1 — framework decorators (routes / CLI commands).
+        scan_decorators(root, src, path, &sym_by_pos, &mut markers);
+    }
+
+    // Feature 9.1.1 — declarative `console_scripts` (pyproject / setup.cfg).
+    if let Some(root_dir) = find_project_root(&files) {
+        let mut targets: Vec<(Option<String>, String)> = Vec::new();
+        if let Ok(text) = std::fs::read_to_string(root_dir.join("pyproject.toml")) {
+            parse_toml_scripts(&text, "[project.scripts]", &mut targets);
+            parse_toml_scripts(&text, "[tool.poetry.scripts]", &mut targets);
+        }
+        if let Ok(text) = std::fs::read_to_string(root_dir.join("setup.cfg")) {
+            parse_setup_cfg_console_scripts(&text, &mut targets);
+        }
+        for (module, func) in targets {
+            match defs_by_name.get(&func).map(Vec::as_slice) {
+                Some([only]) => {
+                    markers.entry(*only).or_insert("console_script");
+                }
+                Some(many) if many.len() > 1 => {
+                    if let Some(module) = &module {
+                        let matches: Vec<i64> = many
+                            .iter()
+                            .copied()
+                            .filter(|id| {
+                                detail.get(id).map_or(false, |s| file_matches_module(&s.path, module))
+                            })
+                            .collect();
+                        if matches.len() == 1 {
+                            markers.entry(matches[0]).or_insert("console_script");
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     // --- Root SCCs (zero in-degree in the condensed DAG) ----------------------
