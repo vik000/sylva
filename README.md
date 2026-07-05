@@ -176,12 +176,20 @@ paths).
 
 ## Add test coverage to the map
 
-If your project emits an LCOV or Cobertura report (e.g.
-`coverage run -m pytest && coverage lcov`):
+Sylva reads **LCOV** or **Cobertura** — a language-neutral format, so the same
+overlay works across languages. Generate a report with your usual tool:
+
+| Language | Command → LCOV |
+|---|---|
+| **Python** | `coverage run -m pytest && coverage lcov` |
+| **Rust** | `cargo tarpaulin --out Lcov` |
+| **JS / TS** | Istanbul / nyc / jest `--coverage` (writes `lcov.info`) |
+
+Then apply it:
 
 ```python
 import sylva
-cov = sylva.parse_coverage("coverage.lcov", "lcov")
+cov = sylva.parse_coverage("coverage.lcov", "lcov")   # or "cobertura"
 sylva.apply_coverage(".codemcp/sylva.db", cov)
 ```
 
