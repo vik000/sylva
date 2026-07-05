@@ -68,9 +68,32 @@ def _serve(db_path):
     return 0
 
 
+QUICKSTART = """\
+Sylva — a codebase knowledge graph for AI agents.
+
+Sylva parses your code, builds a graph of its symbols and relationships, and
+serves it over MCP (for agents like Claude Code) and an interactive web UI.
+
+Getting started (run these from your project's root):
+
+  1. sylva analyze --root .        Index the codebase into .codemcp/sylva.db
+  2. sylva serve-ui                Explore it in the browser (localhost:7700)
+  3. sylva init-mcp                Wire it into Claude Code / an MCP client
+  4. sylva serve                   Run the MCP server directly (stdio)
+
+Run 'sylva <command> --help' for a command's options.
+"""
+
+
 def main(argv=None):
-    parser = argparse.ArgumentParser(prog="sylva", description="Codebase knowledge graph")
-    sub = parser.add_subparsers(dest="command", required=True)
+    parser = argparse.ArgumentParser(
+        prog="sylva",
+        description="Codebase knowledge graph — parses code into a queryable "
+        "graph, served over MCP and a web UI.",
+    )
+    # Not required: a bare `sylva` prints a friendly quickstart instead of a
+    # terse argparse error.
+    sub = parser.add_subparsers(dest="command", required=False)
 
     analyze = sub.add_parser("analyze", help="Analyze a codebase into the graph database")
     analyze.add_argument("--root", required=True, help="Directory (codebase) to analyze")
@@ -93,6 +116,13 @@ def main(argv=None):
     im.add_argument("--out", default=".codemcp", help="Output directory (default .codemcp)")
 
     args = parser.parse_args(argv)
+
+    # Bare `sylva` (no command): show the quickstart + available commands, then
+    # exit 0 — an invocation with no work to do is not an error.
+    if args.command is None:
+        print(QUICKSTART)
+        parser.print_help()
+        return 0
 
     if args.command == "analyze":
         return _analyze(args.root, args.db)

@@ -145,6 +145,9 @@ class TestErrorControl:
         err = capsys.readouterr().err
         assert "database not found" in err
 
-    def test_cli_requires_subcommand(self, tmp_path):
-        with pytest.raises(SystemExit):
-            cli.main([])
+    def test_bare_invocation_shows_help(self, tmp_path, capsys):
+        # A bare `sylva` now prints a quickstart and exits 0 (see test_cli_help),
+        # rather than erroring — an invocation with no work to do is not a failure.
+        rc = cli.main([])
+        assert rc == 0
+        assert "analyze" in capsys.readouterr().out
