@@ -326,10 +326,162 @@ impl Extractor for RustExtractor {
     }
 }
 
+/// Leading JSDoc (`/** … */`) block comment for a TS/JS item — the first
+/// meaningful line, `*`-prefixes stripped. Climbs out of `export …` wrappers so
+/// the comment above an exported declaration is found.
+fn ts_doc(item: Node, src: &[u8]) -> Option<String> {
+    let mut target = item;
+    while let Some(parent) = target.parent() {
+        if parent.kind() == "export_statement" {
+            target = parent;
+        } else {
+            break;
+        }
+    }
+    let prev = target.prev_sibling()?;
+    if prev.kind() != "comment" {
+        return None;
+    }
+    let text = node_text(prev, src);
+    if !text.trim_start().starts_with("/**") {
+        return None; // an ordinary comment — no docstring
+    }
+    text.lines()
+        .map(|l| {
+            l.trim()
+                .trim_start_matches("/**")
+                .trim_start_matches('*')
+                .trim_end_matches("*/")
+                .trim()
+                .to_string()
+        })
+        .find(|l| !l.is_empty())
+}
+
+/// Depth-first walk collecting TS/JS definitions: functions (declarations,
+/// generators, methods, and `const f = () => …` arrow assignments), classes,
+/// interfaces, and enums, at any nesting level.
+fn collect_ts(node: Node, src: &[u8], out: &mut Vec<Symbol>, err_line: &mut Option<usize>) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.is_error() || child.is_missing() {
+            let line = child.start_position().row + 1;
+            *err_line = Some(err_line.map_or(line, |e| e.min(line)));
+        }
+
+        let mut emit = |name_node: Node, kind: &'static str| {
+            out.push(Symbol {
+                name: node_text(name_node, src),
+                kind,
+                line: child.start_position().row + 1,
+                line_end: child.end_position().row + 1,
+                docstring: ts_doc(child, src),
+                import_module: None,
+                import_name: None,
+            });
+        };
+
+        match child.kind() {
+            "function_declaration" | "generator_function_declaration" | "function_signature" => {
+                if let Some(name) = child.child_by_field_name("name") {
+                    emit(name, "function");
+                }
+            }
+            "method_definition" => {
+                if let Some(name) = child.child_by_field_name("name") {
+                    emit(name, "function");
+                }
+            }
+            "class_declaration" | "abstract_class_declaration" => {
+                if let Some(name) = child.child_by_field_name("name") {
+                    emit(name, "class");
+                }
+            }
+            "interface_declaration" => {
+                if let Some(name) = child.child_by_field_name("name") {
+                    emit(name, "interface");
+                }
+            }
+            "enum_declaration" => {
+                if let Some(name) = child.child_by_field_name("name") {
+                    emit(name, "enum");
+                }
+            }
+            // `const f = () => {}` / `const f = function () {}`.
+            "variable_declarator" => {
+                if let Some(value) = child.child_by_field_name("value") {
+                    if matches!(value.kind(), "arrow_function" | "function" | "function_expression")
+                    {
+                        if let Some(name) = child.child_by_field_name("name") {
+                            if name.kind() == "identifier" {
+                                emit(name, "function");
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        collect_ts(child, src, out, err_line);
+    }
+}
+
+/// Parse TS/JS with the given tree-sitter grammar (both back the TS/JS
+/// extractors; the TSX grammar is a superset that handles TS, JSX, and JS).
+fn extract_ts(source: &str, language: &tree_sitter::Language) -> ExtractResult {
+    let src = source.as_bytes();
+    let mut parser = Parser::new();
+    if parser.set_language(language).is_err() {
+        return ExtractResult { symbols: Vec::new(), error_line: Some(1) };
+    }
+    let tree = match parser.parse(src, None) {
+        Some(t) => t,
+        None => return ExtractResult { symbols: Vec::new(), error_line: Some(1) },
+    };
+    let mut symbols = Vec::new();
+    let mut err_line = None;
+    collect_ts(tree.root_node(), src, &mut symbols, &mut err_line);
+    ExtractResult { symbols, error_line: err_line }
+}
+
+/// The TypeScript extractor (`.ts` / `.tsx`).
+struct TypeScriptExtractor;
+impl Extractor for TypeScriptExtractor {
+    fn language(&self) -> &'static str {
+        "typescript"
+    }
+    fn extensions(&self) -> &'static [&'static str] {
+        &["ts", "tsx", "mts", "cts"]
+    }
+    fn extract(&self, source: &str) -> ExtractResult {
+        extract_ts(source, &tree_sitter_typescript::LANGUAGE_TSX.into())
+    }
+}
+
+/// The JavaScript extractor (`.js` / `.jsx` / …), sharing the TSX grammar
+/// (a superset that parses plain JS + JSX).
+struct JavaScriptExtractor;
+impl Extractor for JavaScriptExtractor {
+    fn language(&self) -> &'static str {
+        "javascript"
+    }
+    fn extensions(&self) -> &'static [&'static str] {
+        &["js", "jsx", "mjs", "cjs"]
+    }
+    fn extract(&self, source: &str) -> ExtractResult {
+        extract_ts(source, &tree_sitter_typescript::LANGUAGE_TSX.into())
+    }
+}
+
 /// The registered extractors. A fixed table — registration is inherently
 /// idempotent (a language appears once).
 fn registry() -> Vec<Box<dyn Extractor>> {
-    vec![Box::new(PythonExtractor), Box::new(RustExtractor)]
+    vec![
+        Box::new(PythonExtractor),
+        Box::new(RustExtractor),
+        Box::new(TypeScriptExtractor),
+        Box::new(JavaScriptExtractor),
+    ]
 }
 
 /// The extractor handling `ext` (extension without the dot), if any.
