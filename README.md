@@ -1,149 +1,152 @@
 # Sylva
 
-**Sylva turns a codebase into a queryable knowledge graph — then shows it to you.**
+**Sylva turns a codebase into a queryable knowledge graph — then explains it,
+draws it, and serves it to your AI assistant.**
 
-Point Sylva at a Python project and it reads every file, extracts the functions,
-classes, and imports, and works out how they connect (what calls what, what
-imports what). It stores all of this in a single small database file, and can
-then draw it as an **interactive map of your code** in your browser — or serve
-it to an AI coding assistant so the assistant can understand your code without
-reading every file.
+Point Sylva at a project and it reads the code, extracts the functions, classes,
+and imports, and works out how they connect (what calls what, what imports what).
+From that graph it can:
 
-It's useful for **exploring an unfamiliar codebase**, **finding the important /
-central pieces**, **seeing what a change might break**, and **spotting untested
-code**.
+- **explain the project in plain terms** — the real entrypoint, the main
+  execution path, the architectural layers, how to run it;
+- **draw it** as an interactive map in your browser;
+- **serve it to an AI coding assistant** (Claude Code, Cursor, …) over MCP, so the
+  assistant understands your code without reading every file;
+- and do it all with **one command**: `sylva onboard`.
 
-> **Status:** works today on **Python** codebases. Analysis and the interactive
-> visualisation are ready to use.
+It's built for **understanding an unfamiliar codebase fast** — for humans and for
+agents.
+
+> **Status:** production-ready on **Python** codebases, with **cross-language
+> boundaries** (Rust/PyO3 native modules) represented as black boxes. All
+> analysis is **deterministic** — Sylva never runs an LLM itself; it *enables*
+> one.
 
 ---
 
-## What you get
+## The one command
 
-- **A map of your code** — every function/class as a node, every call and import
-  as a link, in an interactive, zoomable, filterable diagram.
-- **The big picture** — the most-connected "hub" functions and the entry points.
-- **Coverage overlay** (optional) — colour the map red→green by test coverage.
-- **An MCP server** — expose the graph to AI tools (Claude Code, etc.).
+Inside any repo:
+
+```bash
+sylva onboard --root .
+```
+
+This produces, in one deterministic pass:
+
+| Artifact | What it is |
+|---|---|
+| `.codemcp/sylva.db` | the code graph |
+| `SYLVA.md` | a written **project brief** — archetype, entrypoints, main flow, layers, how to run |
+| `DIAGRAMS.md` | **Mermaid diagrams** — system flow, module map, architectural tiers (render on GitHub) |
+| `.codemcp/mcp.json` | an **MCP config** to drop into your AI assistant |
+
+An unknown repo becomes documented, navigable, and agent-ready. Everything below
+is the individual pieces `onboard` ties together.
+
+---
+
+## What Sylva understands
+
+From the graph alone, deterministically:
+
+- **The global entrypoint** — the *actual* start of the program (a `main`, a
+  `__main__` guard, a `console_scripts` target, or a Flask/FastAPI route / click
+  command), ranked — not just "every uncalled function".
+- **The main spine** — the longest execution path from the entrypoint.
+- **Architectural layers** — is it a library, application, or service? For
+  services, which symbols are **interface** / **transport** / **business** /
+  **data**.
+- **What matters** — hubs (most connected), **chokepoints** (betweenness), and
+  **gateways** (dominators — code that gates access to large subsystems).
+- **Blast radius** — everything that would break if a symbol changed.
+- **Test coverage** — overlay red→green, find untested code, map tests to the
+  code they exercise.
+- **Cross-language boundaries** — calls from Python into a Rust/PyO3 (or C)
+  extension, shown as opaque "black box" nodes instead of vanishing.
 
 ---
 
 ## Requirements
 
-You need two things installed first:
-
-1. **Python 3.9 or newer** — check with `python3 --version`
-2. **The Rust toolchain** (used to build Sylva once) — if you don't have it:
+1. **Python 3.9+** — `python3 --version`
+2. **The Rust toolchain** (to build Sylva once) — https://rustup.rs
    ```
    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
    ```
-   (or see https://rustup.rs)
-
----
 
 ## Install (one time — compile Sylva)
 
-Sylva is compiled **once**, inside the Sylva project folder. Open a terminal in
-the folder where this README lives and run:
+From the Sylva project folder:
 
 ```bash
-python3 -m venv .venv          # 1. create an isolated Python environment
-source .venv/bin/activate      # 2. turn it on
-pip install maturin            # 3. get the build tool
+python3 -m venv .venv          # 1. isolated Python environment
+source .venv/bin/activate      # 2. activate it
+pip install maturin            # 3. the build tool
 maturin develop --release      # 4. compile Sylva & install the `sylva` command
 ```
 
-After this you have a `sylva` command. You never recompile — you just run
-`sylva`. The one thing to remember: the `sylva` command only works while the
-environment is **active**, so in any new terminal run `source .venv/bin/activate`
-first (from the Sylva folder).
+You get a `sylva` command. You never recompile — just `source .venv/bin/activate`
+in a new terminal (from the Sylva folder), then run `sylva` from anywhere.
 
 ---
 
-## Try it on a repo (2 steps)
-
-Once activated, you can run `sylva` from anywhere. Sylva stores its data in a
-`.codemcp/` folder **in the directory you run it from** (like `.git`), so the
-simplest, most predictable way is to **go into the repo you want to analyse
-first**:
-
-### 1. Analyze the code
+## Explore visually
 
 ```bash
-cd /path/to/the/repo/you/want/to/analyse
-sylva analyze --root .
+cd /path/to/your/repo
+sylva analyze --root .     # build the graph (or use `sylva onboard --root .`)
+sylva serve-ui             # open the interactive map at http://localhost:7700
 ```
 
-`--root .` means "analyse this folder." Sylva scans it and builds the graph.
-You'll see something like:
+In the browser you can:
 
-```
-sylva: analyzed 83 file(s), 2270 symbols, 1320 relationships -> .codemcp/sylva.db
-sylva: now run  sylva serve-ui --db .codemcp/sylva.db
-```
+- **Zoom / pan / drag** nodes; **click** a node for its details and neighbours.
+- **Filter** by name/file; toggle functions / classes / imports / **foreign
+  modules**.
+- **▤ System flow** — a whole-project block diagram rooted at the inferred
+  entrypoint, main spine highlighted.
+- Click an **entrypoint** in the sidebar to flow it; **◎ focus** a node's
+  neighbourhood; **▸ flow** / **◆ data flow** / **▸ execution path** from any
+  symbol.
+- **Coverage mode** — colour red→green by test coverage.
+- **Module view** — collapse to files or packages.
 
-The graph is saved to `.codemcp/sylva.db` **inside that repo**. (Sylva respects
-the repo's `.gitignore`, so it skips virtualenvs, build folders, etc.)
+Bigger nodes are more connected. Foreign (Rust) modules are amber squares.
+`Ctrl-C` stops the server.
 
-> **Where do files go?** `sylva` writes `.codemcp/` (the graph) and, later,
-> `visualisation/` relative to your **current directory**. Running from inside
-> the repo keeps everything with that repo. You may want to add `.codemcp/` and
-> `visualisation/` to that repo's `.gitignore`.
-
-### 2. See the map
-
-Still in the same folder:
-
-```bash
-sylva serve-ui
-```
-
-This opens your browser at **http://localhost:7700** with the interactive graph.
-
-**In the diagram you can:**
-
-- **Scroll** to zoom, **drag the background** to pan.
-- **Drag a node** to move it; **click a node** to highlight what it connects to
-  and see its details (file, line, degree, coverage).
-- **Filter** by name/file, or toggle functions / classes / imports on and off.
-- Turn on **Coverage mode** to colour nodes red→green by test coverage.
-
-Bigger nodes are more connected — a quick way to spot the important code.
-
-Press `Ctrl-C` in the terminal to stop the server.
-
-> Tip: both commands default to the same database (`.codemcp/sylva.db`), so you
-> can run `sylva analyze --root <repo>` then just `sylva serve-ui`. Use `--db` on
-> both if you want to keep graphs for several repos side by side.
+Sylva writes `.codemcp/` (the graph) relative to your current directory and
+respects the repo's `.gitignore`. Add `.codemcp/` to that repo's `.gitignore`.
 
 ---
 
-## Optional: add test coverage to the map
+## Connect an AI assistant (MCP)
 
-If your project produces a coverage report (LCOV or Cobertura XML — e.g.
-`coverage run -m pytest && coverage lcov`), you can overlay it:
-
-```python
-import sylva
-cov = sylva.parse_coverage("coverage.lcov", "lcov")
-sylva.apply_coverage(".codemcp/sylva.db", cov)
-```
-
-Then reload `sylva serve-ui` and switch on **Coverage mode**.
-
----
-
-## Optional: connect an AI assistant (MCP)
-
-Sylva can serve the graph over the Model Context Protocol so an AI coding tool
-can query it:
+Generate a ready-to-use config:
 
 ```bash
-sylva serve --db .codemcp/sylva.db
+sylva init-mcp --db .codemcp/sylva.db
 ```
 
-It speaks JSON-RPC over stdin/stdout and exposes tools like `search_symbol`,
-`get_callers`, `get_dependencies`, `get_coverage`, and `get_uncovered_paths`.
+This writes `.codemcp/mcp.json` — add its `mcpServers` entry to your Claude Code /
+MCP client config. The assistant can then call these tools:
+
+| Tool | Answers |
+|---|---|
+| `search_symbol` | where is this symbol defined? |
+| `get_source` | show me its actual current code |
+| `get_callers` / `get_dependencies` | who calls it / what does it use? |
+| `trace_calls` | trace call chains to N depth |
+| `blast_radius` | what breaks if I change this? |
+| `get_architecture` | modules, hubs, entry points |
+| `infer_entrypoints` | the ranked, real entrypoints |
+| `main_spine` | the main execution path |
+| `infer_layers` | archetype + per-symbol architectural layer |
+| `centrality` | chokepoints (betweenness) + gateways (dominators) |
+| `get_coverage` / `get_uncovered_paths` / `get_test_coverage` | test-coverage queries |
+
+The server speaks the MCP handshake (`initialize` / `tools/list` / `tools/call`)
+and plain JSON-RPC.
 
 ---
 
@@ -151,22 +154,51 @@ It speaks JSON-RPC over stdin/stdout and exposes tools like `search_symbol`,
 
 | Command | What it does |
 |---|---|
-| `sylva analyze --root <dir> [--db <path>]` | Scan a codebase into the graph database |
-| `sylva serve-ui [--db <path>] [--port N] [--no-open]` | Open the interactive graph in a browser |
-| `sylva export-viz [--db <path>] [--out <dir>]` | Write the graph to `visualisation/graph.json` |
-| `sylva serve [--db <path>]` | Run the MCP server (for AI tools) over stdio |
+| `sylva onboard --root <dir>` | **All-in-one:** graph + brief + diagrams + MCP config |
+| `sylva analyze --root <dir>` | Scan a codebase into the graph database |
+| `sylva serve-ui [--port N] [--no-open]` | Interactive graph in a browser |
+| `sylva brief [--out SYLVA.md]` | Write the project instruction brief |
+| `sylva diagram [--out DIAGRAMS.md]` | Write Mermaid workflow diagrams |
+| `sylva init-mcp [--out .codemcp]` | Write a per-project MCP scaffold |
+| `sylva serve` | Run the MCP server over stdio (for AI tools) |
+| `sylva export-viz [--out <dir>]` | Write `visualisation/graph.json` |
 
 All commands default `--db` to `.codemcp/sylva.db`.
+
+## Optional skills
+
+The `skills/` folder ships optional Claude Code skills that wrap the deterministic
+commands and let an agent enrich the output: **sylva-onboard**, **sylva-brief**,
+**sylva-diagram**.
+
+---
+
+## Add test coverage to the map
+
+If your project emits an LCOV or Cobertura report (e.g.
+`coverage run -m pytest && coverage lcov`):
+
+```python
+import sylva
+cov = sylva.parse_coverage("coverage.lcov", "lcov")
+sylva.apply_coverage(".codemcp/sylva.db", cov)
+```
+
+Reload `sylva serve-ui` and switch on **Coverage mode**.
 
 ---
 
 ## Good to know
 
-- **Python only, for now.** Sylva currently understands Python (`.py`) files.
-  Support for more languages is planned.
-- **Relationships are best-effort.** Call/import links are resolved by name (with
-  same-file and import-aware disambiguation). Sylva never invents a wrong link,
-  but some calls to same-named methods across many classes are left out rather
-  than guessed.
-- **Re-run any time.** `sylva analyze` is safe to re-run; it refreshes the graph.
-- **Set `SYLVA_LOG=1`** for verbose, per-item diagnostics.
+- **Deterministic, no LLM.** All of Sylva's analysis is mechanical and
+  reproducible — same graph, same output. It's built to *feed* an LLM, not be one.
+- **Languages.** Full parsing is Python today; Rust/PyO3 (and C) modules are
+  represented by their **export surface** as black boxes. More full extractors
+  are planned.
+- **Edges are precise, not exhaustive.** Calls/imports resolve by name with
+  same-file, import-aware, and light **type-aware** (`self.method()`,
+  `x = Foo(); x.m()`) disambiguation. Sylva never invents a wrong link;
+  genuinely-ambiguous ones are skipped rather than guessed.
+- **Re-run any time.** `analyze` / `onboard` are safe to re-run; they refresh
+  the graph idempotently.
+- **`SYLVA_LOG=1`** for verbose, per-item diagnostics.
