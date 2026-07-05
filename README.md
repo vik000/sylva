@@ -169,7 +169,8 @@ All commands default `--db` to `.codemcp/sylva.db`.
 
 The `skills/` folder ships optional Claude Code skills that wrap the deterministic
 commands and let an agent enrich the output: **sylva-onboard**, **sylva-brief**,
-**sylva-diagram**.
+**sylva-diagram**, and **sylva-generate-tests** (write e2e tests → verified logic
+paths).
 
 ---
 
@@ -185,6 +186,55 @@ sylva.apply_coverage(".codemcp/sylva.db", cov)
 ```
 
 Reload `sylva serve-ui` and switch on **Coverage mode**.
+
+---
+
+## Verified logic paths (from tests)
+
+Static views show what *could* execute. If you have tests — or write them — Sylva
+can show what *actually* executed, as block diagrams. Sylva runs nothing itself:
+it tells you **what to test**, then **ingests** the coverage your normal test run
+produces.
+
+**1. Ask what to test.** Sylva ranks the untested logic that matters most
+(entrypoints, chokepoints, gateways), with a reason for each:
+
+```bash
+python -c "import sylva, json; print(json.dumps(sylva.suggest_test_targets('.codemcp/sylva.db'), indent=2))"
+```
+```
+[ { "symbol": "wsgi_app", "reason": "chokepoint (betweenness 25.0); gateway (dominates 15)", "score": 330 }, … ]
+```
+
+(also available as the `suggest_test_targets` MCP tool, so an AI assistant can
+target the right code.)
+
+**2. Write end-to-end tests** for the top targets — drive the real entrypoints
+(a request to a route, a CLI command, the public API) and assert behaviour.
+
+**3. Run them with per-test coverage** (your normal test workflow — this is the
+only step that runs code):
+
+```bash
+coverage run --context=test -m pytest
+coverage lcov
+```
+
+**4. Ingest the coverage** so the paths become queryable:
+
+```python
+import sylva
+cov = sylva.parse_coverage("coverage.lcov", "lcov")
+sylva.apply_coverage(".codemcp/sylva.db", cov)
+sylva.map_tests_to_symbols(".codemcp/sylva.db", trace)   # {test: {source_path: [lines]}}
+```
+
+**5. See them.** Reload `sylva serve-ui`: each test appears under **"Logic paths
+(from tests)"** in the sidebar — click one to render the execution path it
+actually exercised as a block diagram.
+
+> The `skills/sylva-generate-tests` skill packages steps 1–4 for an AI assistant
+> to run for you.
 
 ---
 

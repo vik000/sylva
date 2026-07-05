@@ -1295,3 +1295,43 @@ runs an LLM itself; the skills orchestrate the agent side. (GitHub milestone
   - Negative: non-directory root → error
 - Note: sequenced last in Epic 10; pure orchestration over 10.1/10.3 + 8.2 +
   the indexer. Depends on Epic 9. 10.2's runtime test-gen stays agent-side/optional.
+
+#### Feature 10.2 — generate-e2e-tests skill (verified logic paths) (issue #62)
+- Description: The bridge from *possible* paths (static) to *verified* paths
+  (real runs). A **skill** instructs an agent to write end-to-end tests for the
+  inferred entrypoints / untested logic; those tests run in the project's own
+  test workflow (coverage.py — Sylva executes nothing); Sylva ingests the
+  coverage via the existing Epic 3 loop so the **execution paths (4.11)** become
+  real, and surfaces them in the visualisation as first-class **logic-path block
+  diagrams**. Sylva builds the *instruction*, never an LLM.
+- **Shape: skill (primary) + a deterministic recommender + a viz surface.**
+- Inputs: db path (recommender + viz); the skill drives the agent
+- Process:
+  - **Skill** (`skills/sylva-generate-tests.md`): target the inferred entrypoints
+    (`infer_entrypoints`) / high-value untested logic (`suggest_test_targets`),
+    write e2e tests, run with **per-test coverage**, and re-ingest via the
+    existing `parse_coverage` → `map_tests_to_symbols` → `apply_coverage` loop
+    (Epic 3) so `test_covers` edges + coverage exist. Opt-in; runs in the
+    project's normal test env, not Sylva.
+  - **Recommender** (deterministic, testable): `suggest_test_targets(db) ->
+    [{symbol, file, reason, score}]` — rank symbols that (a) have **no inbound
+    `test_covers`** edge and (b) **matter** (entrypoint / centrality /
+    reachability). Tells the agent *what* to test. Exposed via MCP.
+  - **Viz "Logic paths"** (deterministic, testable): a sidebar list of tests that
+    have `test_covers` edges (an `/tests` endpoint) → click a test → its
+    **execution-path block diagram** (reuse 4.11 `exec_path` + `renderLayered`),
+    discoverable like 9.5 did for entrypoints. Makes verified logic paths
+    first-class in the UI instead of hidden behind a per-node button.
+- Outputs: a `sylva-generate-tests` skill; `suggest_test_targets` (fn + MCP tool);
+  a `/tests` endpoint + a "Logic paths (from tests)" sidebar surface rendering
+  exec-path diagrams
+- Testing:
+  - Recommender: an untested, high-centrality symbol is suggested; a
+    well-covered symbol is not; empty graph → []; db not found raises
+  - Viz: `/tests` lists tests with `test_covers` edges; clicking renders an
+    exec-path diagram; the asset contains the logic-paths container + wiring
+  - Skill artifact present + documents the target→write→run→ingest loop
+- Note: the game-changer — real execution paths as block diagrams. Reuses Epic 3
+  (coverage loop), 4.11 (exec-path rendering), 9.1/9.3 (targets). Sylva runs no
+  code; the tests run in the project's own workflow (opt-in). Unblocks the
+  dynamic-dataflow tier-2 (#54).

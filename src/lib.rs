@@ -21,6 +21,7 @@ mod layers;
 mod mcp;
 mod spine;
 mod testmap;
+mod testtargets;
 mod walker;
 mod watcher;
 mod writer;
@@ -54,5 +55,6 @@ fn sylva(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(spine::main_spine, m)?)?;
     m.add_function(wrap_pyfunction!(layers::infer_layers, m)?)?;
     m.add_function(wrap_pyfunction!(centrality::centrality, m)?)?;
+    m.add_function(wrap_pyfunction!(testtargets::suggest_test_targets, m)?)?;
     Ok(())
 }

@@ -31,6 +31,7 @@ from .export import (
     module_map,
     neighborhood,
     system_flow,
+    tests,
 )
 
 ASSETS_DIR = os.path.join(os.path.dirname(__file__), "assets")
@@ -60,6 +61,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._serve_architecture()
         elif route == "/entrypoints":
             self._serve_entrypoints()
+        elif route == "/tests":
+            self._serve_tests()
         elif route == "/neighborhood":
             self._serve_neighborhood()
         elif route == "/architecture-map":
@@ -142,6 +145,14 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._send_json(500, {"error": str(e)})
         except Exception as e:
             self._send_json(500, {"error": f"failed to infer entrypoints: {e}"})
+
+    def _serve_tests(self):
+        try:
+            self._send_json(200, tests(self._db_path))
+        except FileNotFoundError as e:
+            self._send_json(500, {"error": str(e)})
+        except Exception as e:
+            self._send_json(500, {"error": f"failed to list tests: {e}"})
 
     def _serve_neighborhood(self):
         q = parse_qs(urlparse(self.path).query)

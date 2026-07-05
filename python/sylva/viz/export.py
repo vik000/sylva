@@ -436,6 +436,28 @@ def neighborhood(db_path, symbol, depth=1):
     return {"center": symbol, "depth": depth, "nodes": nodes, "edges": sub_edges}
 
 
+def tests(db_path):
+    """Feature 10.2 — tests that exercise real logic paths, for the sidebar
+    "Logic paths" surface. Each test with `test_covers` edges → click to render
+    its execution path (4.11) as a block diagram.
+
+    Returns `[{test, file, covers}]` sorted by name. Raises FileNotFoundError if
+    the database does not exist.
+    """
+    if not os.path.exists(db_path):
+        raise FileNotFoundError(f"database not found: {db_path}")
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT s.name, f.path, COUNT(*) FROM edges e "
+            "JOIN symbols s ON s.id = e.src_id JOIN files f ON f.id = s.file_id "
+            "WHERE e.kind = 'test_covers' GROUP BY s.id ORDER BY s.name"
+        ).fetchall()
+    finally:
+        conn.close()
+    return [{"test": name, "file": path, "covers": n} for (name, path, n) in rows]
+
+
 def entrypoints(db_path):
     """Feature 9.5 — the ranked inferred entrypoints (Feature 9.1) for the
     sidebar navigator, so the structural views are launchable in one click.

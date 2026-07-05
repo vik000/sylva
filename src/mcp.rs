@@ -30,6 +30,7 @@
 //! - `main_spine` (params: entry?) — longest execution path from an entrypoint (Feature 9.2)
 //! - `infer_layers` (no params) — archetype + per-symbol architectural layer (Feature 9.8)
 //! - `centrality` (no params) — betweenness + dominator ranking (Feature 9.3)
+//! - `suggest_test_targets` (no params) — untested logic worth e2e-testing (Feature 10.2)
 //! - `get_source` (params: name, or file+start+end) — current source of a symbol (Feature 8.4)
 //!
 //! `get_callers` / `get_dependencies` read the `edges` table, which is not yet
@@ -333,6 +334,9 @@ fn tools_list() -> Value {
         // Feature 9.3 — centrality: betweenness (chokepoints) + dominators (gateways).
         { "name": "centrality", "description": "Rank symbols by structural importance: betweenness (chokepoints) and dominators (gateways).",
           "inputSchema": json!({ "type": "object", "properties": {} }) },
+        // Feature 10.2 — which untested logic is most worth e2e-testing.
+        { "name": "suggest_test_targets", "description": "Rank untested symbols most worth e2e-testing (importance-weighted), with reasons.",
+          "inputSchema": json!({ "type": "object", "properties": {} }) },
         // Feature 8.4 — fetch a symbol's (or a range's) current source code.
         { "name": "get_source", "description": "Fetch the current source code of a symbol, or an explicit file range.",
           "inputSchema": json!({
@@ -487,6 +491,9 @@ fn dispatch_tool(
             .map(|r| py_to_json(r.bind(py)))
             .map_err(|e| pyerr_to_rpc(py, e)),
         "centrality" => crate::centrality::centrality(py, db_path)
+            .map(|r| py_to_json(r.bind(py)))
+            .map_err(|e| pyerr_to_rpc(py, e)),
+        "suggest_test_targets" => crate::testtargets::suggest_test_targets(py, db_path)
             .map(|r| py_to_json(r.bind(py)))
             .map_err(|e| pyerr_to_rpc(py, e)),
         other => Err((METHOD_NOT_FOUND, format!("Unknown tool: {}", other))),

@@ -76,6 +76,8 @@
       <div id="nav-entries" class="navlist"><div class="row">loading…</div></div>
       <div class="navhead">Hubs</div>
       <div id="nav-hubs" class="navlist"><div class="row">loading…</div></div>
+      <div class="navhead">Logic paths (from tests) — click to trace</div>
+      <div id="nav-tests" class="navlist"><div class="row">loading…</div></div>
     </div>
     <div class="field">
       <label>View</label>
@@ -217,6 +219,7 @@ async function poll() {
       applyGraph(g, true);
       loadArchitecture();
       loadEntrypoints();
+      loadTests();
       if (moduleView && mapLevel === "package") applyModuleMap();  // refresh coarser map
     }
   } catch (e) { /* transient; try again next tick */ }
@@ -538,6 +541,31 @@ async function loadArchitecture() {
   renderNavList("nav-hubs", arch.hubs, "No hubs.");
 }
 
+// Feature 10.2 — verified logic paths: tests with test_covers edges; clicking a
+// test renders the execution path (4.11) it actually exercised, as a block diagram.
+async function loadTests() {
+  let ts;
+  try { ts = await (await fetch("tests")).json(); }
+  catch (e) { return; }
+  const el = document.getElementById("nav-tests");
+  el.innerHTML = "";
+  if (!ts || ts.error || !ts.length) {
+    el.innerHTML = `<div class="row">No coverage-mapped tests yet.</div>`;
+    return;
+  }
+  for (const t of ts.slice(0, 30)) {
+    const row = document.createElement("div");
+    row.className = "navitem";
+    row.title = (t.file || "") + " · covers " + t.covers + " symbol(s)";
+    const b = document.createElement("span");
+    b.className = "deg"; b.textContent = t.covers;
+    row.appendChild(b);
+    row.appendChild(document.createTextNode(t.test));
+    row.onclick = () => enterExec(t.test);  // render its execution-path diagram
+    el.appendChild(row);
+  }
+}
+
 // Feature 9.5 — the ranked inferred entrypoints (9.1); clicking one launches its
 // layered flow (9.4/4.10), so the structural views are discoverable, not buried.
 async function loadEntrypoints() {
@@ -687,6 +715,7 @@ resize();
 load();
 loadArchitecture();
 loadEntrypoints();
+loadTests();
 </script>
 </body>
 </html>
