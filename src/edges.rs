@@ -541,7 +541,9 @@ pub fn build_edges(db_path: &str) -> PyResult<usize> {
     let mut defs_by_name: HashMap<String, Vec<(i64, i64)>> = HashMap::new();
     let mut by_file: HashMap<i64, Vec<usize>> = HashMap::new();
     for (i, s) in syms.iter().enumerate() {
-        if s.kind == "function" || s.kind == "class" {
+        // `foreign_export` (Feature 5.0) is a resolution target too, so a Python
+        // call to a PyO3-exported name links across the language boundary.
+        if s.kind == "function" || s.kind == "class" || s.kind == "foreign_export" {
             defs_by_name.entry(s.name.clone()).or_default().push((s.id, s.file_id));
         }
         if s.kind != "import" {
@@ -613,6 +615,11 @@ pub fn build_edges(db_path: &str) -> PyResult<usize> {
     // --- Call edges --------------------------------------------------------
     let mut call_edges: Vec<(i64, i64)> = Vec::new();
     for (file_id, path) in &files {
+        // Only Python files are parsed for call sites; foreign files (Feature
+        // 5.0) contribute their export symbols as resolution targets, not calls.
+        if !path.ends_with(".py") {
+            continue;
+        }
         let source = match std::fs::read_to_string(path) {
             Ok(s) => s,
             Err(e) => {

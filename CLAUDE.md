@@ -572,6 +572,53 @@ Never: silent corruption, undefined behaviour, unlogged failures.
 
 ### Epic 5 — Additional Language Support
 
+#### Feature 5.0 — Black-box foreign modules from the export surface (issue #43)
+- Description: For non-Python languages (Rust/C/C++ accelerators), **do not fully
+  parse** — represent each foreign module as an opaque **black-box node**
+  exposing only its **export surface** (the entrypoints callable from indexed
+  code). Cross-language calls from Python resolve to those entrypoints, so the
+  boundary is visible instead of a silently-dropped edge.
+- **Scope reality (important):** this covers **foreign-*language*** boundaries
+  (e.g. a repo's own Rust/PyO3 or C extension) — NOT unresolved external *Python*
+  packages (click, werkzeug). Sylva itself (Rust + PyO3) is the natural dogfood
+  target: Python→Rust calls (`sylva.build_edges(...)`) currently show as
+  unresolved; 5.0 makes the Rust module + its `#[pyfunction]` exports a black box.
+- Inputs: repo root / foreign source files, db path
+- Process:
+  - Walk foreign files (extend the walker beyond `.py`). A lightweight
+    **export-surface extractor** recognises only export declarations (targeted
+    parse / tree-sitter query), not internals:
+    - Rust + PyO3: `#[pyfunction]`, `#[pymodule]`, `m.add_function(...)`
+    - (later) C `PyMethodDef`, FFI `#[no_mangle]` / `extern "C"`, `__all__`
+  - Emit one **`foreign_module`** node per module + its **`foreign_export`**
+    entrypoint symbols (opaque).
+  - Cross-boundary resolution: a Python call/import to an exported name resolves
+    to the black-box entrypoint (`calls`/`imports` edge across the boundary).
+  - Internals are NOT parsed. Fits under Feature 5.1's extractor trait as a
+    distinct "export-surface" kind (5.1 not yet built — see dependency note).
+- Outputs: foreign modules represented (not dropped); Python→foreign edges exist
+- Testing:
+  - A Python file calling a PyO3-exported Rust fn → edge to a black-box entrypoint
+  - A foreign file with no recognisable exports → module node with no entrypoints
+    (or skipped) — never a crash
+  - Mixed repo: non-Python files represented as black boxes, not silently dropped
+- Note: depends conceptually on Feature 5.1 (trait) — build minimal/targeted here
+  rather than the full refactor. Distinct from external-Python-dep black-boxing.
+  Feature 5.0.1 (#44) styles these nodes in the viz.
+
+#### Feature 5.0.1 — Represent black-box foreign modules in the visualisation (issue #44)
+- Description: Show Feature 5.0's black-box foreign modules distinctly in the
+  interactive graph so cross-language boundaries are visible and obviously opaque.
+- Process (data-layer first, like 4.5 `coverage_state`): `build_graph` carries a
+  per-node black-box flag/kind; `index.html` maps it to a distinct style
+  (shape/colour/badge) + a legend entry + a "show/hide foreign modules" filter
+  toggle (reuse the 4.4/4.5 toggle pattern). Render the cross-language edges.
+- Outputs: foreign module/entrypoint nodes visibly distinct + a filter control
+- Testing:
+  - Foreign nodes carry the black-box flag/kind in graph.json
+  - The UI asset contains the distinct rendering + the foreign-module filter
+- Note: depends on Feature 5.0 (defines the data) + 4.4/4.5 (viz/toggle pattern).
+
 #### Feature 5.1 — Pluggable language extractor trait
 - Description: Define a clean Rust trait so adding a new language is implementing one module
 - Inputs: language name, file extension, tree-sitter grammar

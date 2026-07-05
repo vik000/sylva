@@ -16,6 +16,21 @@ import sylva
 DEFAULT_DB = ".codemcp/sylva.db"
 
 
+def _walk_foreign(root):
+    """Yield foreign-language source files to black-box (Feature 5.0).
+
+    Currently Rust (`.rs`); build artefacts (`target/`) and hidden dirs are
+    skipped. Kept in Python — this is a plain directory walk, not graph logic.
+    """
+    import pathlib
+
+    for p in pathlib.Path(root).rglob("*.rs"):
+        parts = set(p.parts)
+        if "target" in parts or any(seg.startswith(".") for seg in p.parts):
+            continue
+        yield str(p)
+
+
 def _analyze(root, db_path):
     """Analyze a codebase into the graph database. Returns a process exit code."""
     if not os.path.isdir(root):
@@ -36,13 +51,26 @@ def _analyze(root, db_path):
             if os.environ.get("SYLVA_LOG"):
                 print(f"sylva: skipping '{path}': {e}", file=sys.stderr)
 
+    # Feature 5.0 — black-box foreign (Rust/PyO3) modules by their export surface.
+    foreign = 0
+    for path in _walk_foreign(root):
+        try:
+            exports = sylva.extract_foreign_exports(path)
+            if exports:  # only index files that actually declare an export surface
+                sylva.write_symbols(db_path, path, exports)
+                foreign += len(exports)
+        except Exception as e:
+            if os.environ.get("SYLVA_LOG"):
+                print(f"sylva: skipping foreign '{path}': {e}", file=sys.stderr)
+
     edges = sylva.build_edges(db_path)
     flows = sylva.build_dataflow(db_path)  # Feature 4.12 — static parameter flow
 
     note = f" ({skipped} skipped)" if skipped else ""
+    fnote = f", {foreign} foreign export(s)" if foreign else ""
     print(
         f"sylva: analyzed {len(files)} file(s){note}, "
-        f"{total_symbols} symbols, {edges} relationships, {flows} data-flow(s) -> {db_path}"
+        f"{total_symbols} symbols, {edges} relationships, {flows} data-flow(s){fnote} -> {db_path}"
     )
     print(f"sylva: now run  sylva serve-ui --db {db_path}")
     return 0
