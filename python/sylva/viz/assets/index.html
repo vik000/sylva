@@ -99,6 +99,7 @@
     <div class="field">
       <label>Overlay</label>
       <div class="toggle"><input type="checkbox" id="cov-mode"> coverage mode (red→green)</div>
+      <div class="toggle"><input type="checkbox" id="accessible-only"><span class="dot" style="background:#3fb950;border-radius:2px"></span>accessible only (callable via MCP)</div>
       <div id="covnote" class="hint" style="display:none">No coverage data yet — run coverage analysis, then reload.</div>
     </div>
     <div id="info"><div class="row">Click a node for details.</div></div>
@@ -132,6 +133,7 @@ let focusSet = new Set(), pinned = new Set(), focusHistory = [];
 let RAW = { nodes: [], links: [], modules: [], module_links: [] };
 const kinds = { function: true, class: true, import: true };
 let showForeign = true;  // 5.0.1 — show/hide black-box foreign modules
+let accessibleOnly = false;  // 8.3 — show only agent-callable (exposed) symbols
 let filterText = "";
 
 // A file path -> its short module label (basename).
@@ -276,6 +278,8 @@ function radius(n) { return 3 + Math.sqrt(n.degree || 0) * 1.8; }
 function visible(n) {
   // Focus mode: only the neighbourhood set (plus pinned nodes) is shown.
   if (focusMode && !focusSet.has(n.id) && !pinned.has(n.id)) return false;
+  // 8.3 — "accessible only": show just the agent-callable (exposed) symbols.
+  if (accessibleOnly && !n.accessible) return false;
   // The kind filter (functions/classes/imports) and the 5.0.1 foreign toggle
   // only apply to the function-level view; module nodes are always kind-visible.
   if (!moduleView) {
@@ -326,6 +330,8 @@ function draw() {
       ctx.strokeStyle = "#f2a65a"; ctx.lineWidth = 2 / view.k; ctx.stroke();  // pinned
     } else if (flowMode && n.on_spine) {
       ctx.strokeStyle = "#a371f7"; ctx.lineWidth = 2.5 / view.k; ctx.stroke();  // 9.4 main spine
+    } else if (n.accessible) {
+      ctx.strokeStyle = "#3fb950"; ctx.lineWidth = 2 / view.k; ctx.stroke();  // 8.3 agent-callable
     }
     if (view.k > 1.1 || n.id === hoverId || (selected && n.id === selected.id)) {
       ctx.globalAlpha = dim ? 0.35 : 1;
@@ -678,6 +684,9 @@ for (const k of ["function", "class", "import"]) {
 document.getElementById("k-foreign").addEventListener("change", e => { showForeign = e.target.checked; draw(); });
 document.getElementById("cov-mode").addEventListener("change", e => {
   coverageMode = e.target.checked; updateCovNote(); draw();
+});
+document.getElementById("accessible-only").addEventListener("change", e => {
+  accessibleOnly = e.target.checked; draw();  // 8.3 filter to the callable surface
 });
 document.getElementById("module-view").addEventListener("change", e => {
   if (focusMode) exitFocus();

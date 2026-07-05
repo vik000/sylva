@@ -37,6 +37,32 @@ def coverage_state(coverage):
     return "high"
 
 
+def _accessible_ids(db_path, nodes):
+    """Feature 8.3 — the set of node ids exposed by an `expose.toml` next to the
+    db (Feature 8.5's executable surface). Reuses 8.5's resolution so the badge
+    reflects exactly what `sylva expose` would expose. No allowlist → empty set;
+    never raises (an accessibility overlay must not break graph building)."""
+    toml = os.path.join(os.path.dirname(db_path) or ".", "expose.toml")
+    if not os.path.isfile(toml) or not nodes:
+        return set()
+    try:
+        from ..expose import _file_matches_module, _resolve, parse_allowlist
+
+        with open(toml) as f:
+            allowlist = parse_allowlist(f.read())
+        files = [n["file"] for n in nodes]
+        root = os.path.dirname(files[0]) if len(files) == 1 else os.path.commonpath(files)
+        targets, _warnings = _resolve(db_path, root, allowlist)
+        exposed = set()
+        for module, fn, _desc in targets:
+            for n in nodes:
+                if n["name"] == fn and _file_matches_module(n["file"], module):
+                    exposed.add(n["id"])
+        return exposed
+    except Exception:
+        return set()
+
+
 def build_graph(db_path):
     """Build the `{nodes, links}` graph dict from the database.
 
@@ -74,9 +100,16 @@ def build_graph(db_path):
             "degree": degree.get(sid, 0),
             # Feature 5.0.1 — black-box foreign (Rust/PyO3) boundary node.
             "foreign": kind in ("foreign_module", "foreign_export"),
+            # Feature 8.3 — agent-callable (exposed via 8.5's allowlist); set below.
+            "accessible": False,
         }
         for (sid, name, kind, line, coverage, path) in symbols
     ]
+    # Feature 8.3 — mark nodes exposed by an `expose.toml` next to the db.
+    exposed = _accessible_ids(db_path, nodes)
+    for n in nodes:
+        n["accessible"] = n["id"] in exposed
+
     links = [{"source": src, "target": dst, "kind": kind} for (src, dst, kind) in edges]
 
     # Feature 4.6 — module (file) clustering: a higher-level view. Each file is a

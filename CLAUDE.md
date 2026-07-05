@@ -1046,6 +1046,30 @@ others) with minimal setup, and surface it for reporting. (GitHub milestone
   files, docstrings) from Epics 1/9. Language-neutral selection is future-proof;
   Python execution first, extensible. Ties to 8.3 (accessible functions in viz).
 
+#### Feature 8.3 — Represent accessible functions in the visualisation (issue #42)
+- Description: Show, in the interactive graph, which symbols are **agent-callable
+  — i.e. exposed via Feature 8.5's `expose` allowlist** (`.codemcp/expose.toml`).
+  Reframed from the original 8.2 wording (query access = ~everything, not a
+  useful distinction) to the sharp, meaningful set: the **executable surface**.
+- Inputs: db path (the allowlist lives next to it at `.codemcp/expose.toml`)
+- Process (data-layer first, like 4.5 `coverage_state`):
+  - `build_graph` reads `expose.toml` **next to the db** (if present), resolves
+    it against the graph (reuse `expose._resolve` / `_file_matches_module`), and
+    adds an **`accessible`** boolean per node — true when the symbol is in the
+    exposed set (methods/privates excluded exactly as `expose` does). No allowlist
+    → all `accessible: false`.
+  - `index.html`: badge/ring accessible nodes distinctly + an **"accessible
+    only"** filter toggle (reuse the 4.4/4.5 toggle/overlay pattern) + a legend.
+- Outputs: nodes carry `accessible`; the UI badges them and offers the filter
+- Testing:
+  - Nodes carry `accessible` correctly for a known allowlist (exposed funcs true,
+    others false); module shorthand + `mod:fn` both resolve
+  - No `expose.toml` → all nodes `accessible: false` (no crash)
+  - The UI asset contains the badge rendering + the "accessible only" filter
+- Note: ties Feature 8.5 (executable MCP surface) into the visualisation; pure
+  reuse of 8.5's resolution + the 4.5 data-layer-testable overlay pattern. No
+  Rust change.
+
 ---
 
 ### Epic 9 — Structural Understanding (deterministic)

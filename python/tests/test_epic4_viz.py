@@ -95,10 +95,10 @@ class TestBuildGraph:
         db = _init(tmp_path)
         _seed(db)
         node = build_graph(str(db))["nodes"][0]
-        # `coverage_state` added by 4.5 (overlay); `foreign` added by 5.0.1.
+        # `coverage_state` (4.5), `foreign` (5.0.1), `accessible` (8.3) added.
         assert set(node.keys()) == {
             "id", "name", "kind", "file", "line", "coverage", "coverage_state",
-            "degree", "foreign",
+            "degree", "foreign", "accessible",
         }
 
     def test_empty_graph(self, tmp_path):
