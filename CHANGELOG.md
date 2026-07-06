@@ -5,6 +5,11 @@ grouped by the epics that shaped each line.
 
 ## 4.x — Polyglot analysis, executable MCP & full reporting
 
+- **4.13.0** — **Epic 11: `list_symbols` + `neighborhood`.** Two more traversal
+  tools: `list_symbols` (cheap graph-only inventory of functions/classes, filter
+  by file/kind, no source read) and `neighborhood` (a symbol's N-hop undirected
+  local structure over calls/imports/inherits, with hop distances). Completes the
+  navigate-the-tree toolset.
 - **4.12.0** — **Epic 11: token-efficient traversal.** Two MCP tools so an
   agent navigates the tree instead of reading files: **`get_overview`** (one-call
   orientation — archetype, entrypoints, layers, modules, hubs, spine) and

@@ -153,6 +153,8 @@ client's own config. The assistant can then call these tools:
 |---|---|
 | `get_overview` | **start here** — archetype, entrypoints, layers, top modules, hubs, spine, in one call |
 | `get_outline` | a file's **skeleton** — every symbol's signature + docstring + line span, **no bodies** |
+| `list_symbols` | inventory of functions/classes (filter by file/kind) — cheap, no source |
+| `neighborhood` | a symbol's N-hop local structure (calls/imports/inherits) |
 | `search_symbol` | where is this symbol defined? |
 | `get_source` | show me its actual current code |
 | `get_callers` / `get_dependencies` | who calls it / what does it use? |

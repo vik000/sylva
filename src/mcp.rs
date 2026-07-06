@@ -41,8 +41,9 @@
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyList};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 // JSON-RPC error codes (standard + one app-specific server error).
@@ -374,7 +375,24 @@ fn tools_list() -> Value {
               "required": ["file"]
           }) },
         { "name": "get_overview", "description": "One-call orientation: archetype, primary + ranked entrypoints, per-layer counts, top modules, hubs, and the main spine.",
-          "inputSchema": json!({ "type": "object", "properties": {} }) }
+          "inputSchema": json!({ "type": "object", "properties": {} }) },
+        { "name": "list_symbols", "description": "Inventory of functions/classes, optionally filtered by 'file' and/or 'kind' — cheap, no source read.",
+          "inputSchema": json!({
+              "type": "object",
+              "properties": {
+                  "file": { "type": "string", "description": "File path or filename fragment (optional)" },
+                  "kind": { "type": "string", "description": "Filter by 'function' or 'class' (optional)" }
+              }
+          }) },
+        { "name": "neighborhood", "description": "The N-hop undirected neighbourhood of a symbol over calls/imports/inherits — its local structure in one call.",
+          "inputSchema": json!({
+              "type": "object",
+              "properties": {
+                  "name": { "type": "string", "description": "Centre symbol name" },
+                  "depth": { "type": "integer", "description": "Hops (default 1)" }
+              },
+              "required": ["name"]
+          }) }
     ])
 }
 
@@ -539,6 +557,153 @@ fn overview(py: Python<'_>, db_path: &str) -> Result<Value, (i64, String)> {
     }))
 }
 
+/// `list_symbols` — a cheap inventory of functions/classes, optionally filtered
+/// by `file` (path fragment) and/or `kind`. Pure graph read (no source), so an
+/// agent can enumerate "what's here" without pulling any bodies.
+fn list_symbols_query(db_path: &str, file: Option<&str>, kind: Option<&str>) -> Result<Value, String> {
+    let conn = open_db(db_path)?;
+    let mut sql = String::from(
+        "SELECT s.name, s.kind, f.path, s.line_start, s.line_end \
+         FROM symbols s JOIN files f ON f.id = s.file_id \
+         WHERE s.kind IN ('function', 'class')",
+    );
+    let mut binds: Vec<String> = Vec::new();
+    if let Some(k) = kind {
+        binds.push(k.to_string());
+        sql.push_str(&format!(" AND s.kind = ?{}", binds.len()));
+    }
+    if let Some(f) = file {
+        binds.push(f.to_string());
+        let i = binds.len();
+        sql.push_str(&format!(" AND (f.path = ?{} OR f.path LIKE '%' || ?{})", i, i));
+    }
+    sql.push_str(" ORDER BY f.path, s.line_start");
+
+    let mut stmt = conn.prepare(&sql).map_err(|e| format!("failed to prepare query: {}", e))?;
+    let rows = stmt
+        .query_map(params_from_iter(binds.iter()), |r| {
+            Ok(json!({
+                "name": r.get::<_, String>(0)?,
+                "kind": r.get::<_, String>(1)?,
+                "file": r.get::<_, String>(2)?,
+                "line_start": r.get::<_, Option<i64>>(3)?,
+                "line_end": r.get::<_, Option<i64>>(4)?,
+            }))
+        })
+        .map_err(|e| format!("query failed: {}", e))?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|e| format!("failed to read row: {}", e))?);
+    }
+    Ok(Value::Array(out))
+}
+
+/// `neighborhood` — the N-hop **undirected** neighbourhood of a symbol over
+/// calls/imports/inherits: every symbol within `depth` hops (with its distance)
+/// plus the edges among them. Lets an agent see a symbol's local structure in
+/// one call. Distinct from `trace_calls` (directional) and `blast_radius`
+/// (inbound only).
+fn neighborhood_query(db_path: &str, symbol: &str, depth: i64) -> Result<Value, String> {
+    let conn = open_db(db_path)?;
+
+    let mut adj: HashMap<i64, Vec<i64>> = HashMap::new();
+    let mut edge_list: Vec<(i64, i64)> = Vec::new();
+    {
+        let mut stmt = conn
+            .prepare("SELECT src_id, dst_id FROM edges WHERE kind IN ('calls', 'imports', 'inherits')")
+            .map_err(|e| format!("failed to prepare query: {}", e))?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))
+            .map_err(|e| format!("query failed: {}", e))?;
+        for row in rows {
+            let (s, d) = row.map_err(|e| format!("failed to read row: {}", e))?;
+            adj.entry(s).or_default().push(d);
+            adj.entry(d).or_default().push(s);
+            edge_list.push((s, d));
+        }
+    }
+
+    let start_ids: Vec<i64> = {
+        let mut stmt = conn
+            .prepare("SELECT id FROM symbols WHERE name = ?1 AND kind IN ('function', 'class')")
+            .map_err(|e| format!("failed to prepare query: {}", e))?;
+        let rows = stmt
+            .query_map(params![symbol], |r| r.get::<_, i64>(0))
+            .map_err(|e| format!("query failed: {}", e))?;
+        let mut ids = Vec::new();
+        for row in rows {
+            ids.push(row.map_err(|e| format!("failed to read row: {}", e))?);
+        }
+        ids
+    };
+    if start_ids.is_empty() {
+        return Ok(json!({ "center": symbol, "depth": depth, "nodes": [], "edges": [] }));
+    }
+
+    // BFS with hop distance (cycle-safe via the visited `dist` map).
+    let mut dist: HashMap<i64, i64> = HashMap::new();
+    let mut frontier = Vec::new();
+    for &id in &start_ids {
+        dist.insert(id, 0);
+        frontier.push(id);
+    }
+    let mut d = 0;
+    while d < depth && !frontier.is_empty() {
+        let mut next = Vec::new();
+        for id in &frontier {
+            if let Some(neigh) = adj.get(id) {
+                for &w in neigh {
+                    if !dist.contains_key(&w) {
+                        dist.insert(w, d + 1);
+                        next.push(w);
+                    }
+                }
+            }
+        }
+        frontier = next;
+        d += 1;
+    }
+
+    // Metadata for the reached ids.
+    let mut meta: HashMap<i64, (String, String, String)> = HashMap::new();
+    {
+        let mut stmt = conn
+            .prepare("SELECT s.id, s.name, s.kind, f.path FROM symbols s JOIN files f ON f.id = s.file_id")
+            .map_err(|e| format!("failed to prepare query: {}", e))?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?))
+            })
+            .map_err(|e| format!("query failed: {}", e))?;
+        for row in rows {
+            let (id, name, kind, path) = row.map_err(|e| format!("failed to read row: {}", e))?;
+            if dist.contains_key(&id) {
+                meta.insert(id, (name, kind, path));
+            }
+        }
+    }
+
+    let mut nodes: Vec<(i64, Value)> = dist
+        .iter()
+        .filter_map(|(id, dd)| {
+            meta.get(id).map(|(n, k, f)| (*dd, json!({ "name": n, "kind": k, "file": f, "dist": dd })))
+        })
+        .collect();
+    nodes.sort_by(|a, b| a.0.cmp(&b.0));
+    let nodes: Vec<Value> = nodes.into_iter().map(|(_, v)| v).collect();
+
+    let edges: Vec<Value> = edge_list
+        .iter()
+        .filter(|(s, t)| dist.contains_key(s) && dist.contains_key(t))
+        .filter_map(|(s, t)| match (meta.get(s), meta.get(t)) {
+            (Some((sn, _, _)), Some((tn, _, _))) => Some(json!({ "source": sn, "target": tn })),
+            _ => None,
+        })
+        .collect();
+
+    Ok(json!({ "center": symbol, "depth": depth, "nodes": nodes, "edges": edges }))
+}
+
 fn dispatch_tool(
     py: Python<'_>,
     db_path: &str,
@@ -638,6 +803,16 @@ fn dispatch_tool(
             outline_query(db_path, target).map_err(|m| (SERVER_ERROR, m))
         }
         "get_overview" => overview(py, db_path),
+        "list_symbols" => {
+            let file = args.get("file").and_then(Value::as_str);
+            let kind = args.get("kind").and_then(Value::as_str);
+            list_symbols_query(db_path, file, kind).map_err(|m| (SERVER_ERROR, m))
+        }
+        "neighborhood" => {
+            let symbol = name_from(args).ok_or_else(invalid_name)?;
+            let depth = args.get("depth").and_then(Value::as_i64).unwrap_or(1);
+            neighborhood_query(db_path, symbol, depth).map_err(|m| (SERVER_ERROR, m))
+        }
 
         other => Err((METHOD_NOT_FOUND, format!("Unknown tool: {}", other))),
     }
