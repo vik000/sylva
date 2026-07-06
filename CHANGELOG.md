@@ -5,6 +5,10 @@ grouped by the epics that shaped each line.
 
 ## 4.x — Polyglot analysis, executable MCP & full reporting
 
+- **4.9.0** — **`init-mcp --mcp-json`: one-step Claude Code wiring.** `init-mcp`
+  can now write (and merge into) a **root `.mcp.json`** that Claude Code
+  auto-loads — no manual `claude mcp add`. Existing servers in the file are
+  preserved. README documents the full MCP setup.
 - **4.8.1** — **`init-mcp` emits the absolute `sylva` path.** The generated
   `mcp.json` now uses the absolute path to the `sylva` executable (resolved from
   the running interpreter's venv) instead of the bare name, so the MCP server

@@ -126,14 +126,28 @@ respects the repo's `.gitignore`. Add `.codemcp/` to that repo's `.gitignore`.
 
 ## Connect an AI assistant (MCP)
 
-Generate a ready-to-use config:
+Generate the config **and** wire it into Claude Code in one step:
 
 ```bash
-sylva init-mcp --db .codemcp/sylva.db
+sylva init-mcp --db .codemcp/sylva.db --mcp-json
 ```
 
-This writes `.codemcp/mcp.json` — add its `mcpServers` entry to your Claude Code /
-MCP client config. The assistant can then call these tools:
+`--mcp-json` writes a `.mcp.json` at the **project root** (merging with any
+existing one, so other servers are kept) — Claude Code **auto-loads** it when you
+open the project. It uses the **absolute path** to the `sylva` executable, so it
+launches even when `sylva` lives in a venv that isn't on your PATH. Then open the
+project in Claude Code and check `/mcp` shows **sylva** connected.
+
+> **Note on locations:** without `--mcp-json`, `init-mcp` only writes
+> `.codemcp/mcp.json` (a scaffold) — most clients do **not** read that path. Use
+> `--mcp-json` for the root `.mcp.json` Claude Code reads, or register it manually:
+> ```bash
+> claude mcp add sylva -- /abs/path/to/.venv/bin/sylva serve --db /abs/path/to/.codemcp/sylva.db
+> ```
+> (`init-mcp` prints this exact command for your project.)
+
+Other MCP clients: add the `mcpServers` entry from `.codemcp/mcp.json` to the
+client's own config. The assistant can then call these tools:
 
 | Tool | Answers |
 |---|---|
@@ -182,7 +196,7 @@ Language-neutral by design (Python execution backend first).
 | `sylva brief [--out SYLVA.md]` | Write the project instruction brief |
 | `sylva diagram [--out DIAGRAMS.md]` | Write Mermaid workflow diagrams |
 | `sylva report [--out report]` | Write a **health/risk report** (`REPORT.md` + `report.json`) |
-| `sylva init-mcp [--out .codemcp]` | Write a per-project MCP scaffold (query access) |
+| `sylva init-mcp [--mcp-json]` | Write the MCP config (query access); `--mcp-json` wires it into Claude Code's root `.mcp.json` |
 | `sylva expose --root <dir>` | Generate an MCP server exposing **allowlisted** repo functions (execute access) |
 | `sylva serve` | Run the MCP server over stdio (for AI tools) |
 | `sylva export-viz [--out <dir>]` | Write `visualisation/graph.json` |

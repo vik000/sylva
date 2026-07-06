@@ -106,6 +106,11 @@ def main(argv=None):
     im = sub.add_parser("init-mcp", help="Write a per-project MCP scaffold for agent access")
     im.add_argument("--db", default=DEFAULT_DB, help=f"Graph database path (default {DEFAULT_DB})")
     im.add_argument("--out", default=".codemcp", help="Output directory (default .codemcp)")
+    im.add_argument(
+        "--mcp-json", nargs="?", const=".mcp.json", default=None, metavar="PATH",
+        help="Also write/merge a client config at PATH (default .mcp.json at the "
+             "project root) that Claude Code auto-loads — no manual `claude mcp add`",
+    )
 
     br = sub.add_parser("brief", help="Generate a project instruction brief (SYLVA.md)")
     br.add_argument("--db", default=DEFAULT_DB, help=f"Graph database path (default {DEFAULT_DB})")
@@ -208,8 +213,27 @@ def main(argv=None):
             print(f"sylva: {e}", file=sys.stderr)
             return 1
         print(f"sylva: wrote MCP scaffold -> {cfg}  (command: {sylva_cmd})")
-        print("sylva: register it with your client, e.g.:")
-        print(f"       claude mcp add sylva -- {sylva_cmd} serve --db {os.path.abspath(args.db)}")
+
+        if args.mcp_json:
+            import json as _json
+
+            server = {"command": sylva_cmd, "args": ["serve", "--db", os.path.abspath(args.db)]}
+            data = {"mcpServers": {}}
+            if os.path.exists(args.mcp_json):
+                try:
+                    with open(args.mcp_json) as f:
+                        data = _json.load(f)
+                except (OSError, ValueError):
+                    data = {"mcpServers": {}}  # unreadable/invalid — start fresh
+            data.setdefault("mcpServers", {})["sylva"] = server  # merge, keep others
+            with open(args.mcp_json, "w") as f:
+                _json.dump(data, f, indent=2)
+            print(f"sylva: wrote client config -> {args.mcp_json}  (merged the 'sylva' server)")
+            print("sylva: open this project in Claude Code — it auto-loads .mcp.json.")
+        else:
+            print("sylva: register it with your client, e.g.:")
+            print(f"       claude mcp add sylva -- {sylva_cmd} serve --db {os.path.abspath(args.db)}")
+            print("sylva: or re-run with --mcp-json to write a root .mcp.json Claude Code auto-loads.")
         return 0
 
     if args.command == "brief":

@@ -60,6 +60,30 @@ class TestScaffold:
             cfg = json.load(f)
         assert cfg["mcpServers"]["sylva"]["command"] == exe
 
+    def test_mcp_json_written_via_cli(self, tmp_path, monkeypatch):
+        import sylva.__main__ as cli
+
+        db = _init(tmp_path)
+        monkeypatch.chdir(tmp_path)
+        rc = cli.main(["init-mcp", "--db", str(db), "--mcp-json"])
+        assert rc == 0
+        cfg = json.load(open(tmp_path / ".mcp.json"))
+        server = cfg["mcpServers"]["sylva"]
+        assert os.path.isabs(server["command"])          # absolute sylva exe
+        assert server["args"][:2] == ["serve", "--db"]
+
+    def test_mcp_json_merges_existing(self, tmp_path, monkeypatch):
+        import sylva.__main__ as cli
+
+        db = _init(tmp_path)
+        monkeypatch.chdir(tmp_path)
+        # A pre-existing client config with another server must be preserved.
+        (tmp_path / ".mcp.json").write_text(
+            json.dumps({"mcpServers": {"other": {"command": "x", "args": []}}}))
+        cli.main(["init-mcp", "--db", str(db), "--mcp-json"])
+        cfg = json.load(open(tmp_path / ".mcp.json"))
+        assert set(cfg["mcpServers"]) == {"other", "sylva"}   # merged, not clobbered
+
     def test_relative_db_is_absolutised(self, tmp_path, monkeypatch):
         db = _init(tmp_path)
         monkeypatch.chdir(tmp_path)
