@@ -596,8 +596,8 @@ fn absolutise(path: &str) -> PathBuf {
 /// to the graph — it does not turn the analysed repo's own functions into
 /// executable tools.
 #[pyfunction]
-#[pyo3(signature = (db_path, out_dir=".codemcp"))]
-pub fn init_mcp(db_path: &str, out_dir: &str) -> PyResult<String> {
+#[pyo3(signature = (db_path, out_dir=".codemcp", command=None))]
+pub fn init_mcp(db_path: &str, out_dir: &str, command: Option<&str>) -> PyResult<String> {
     use pyo3::exceptions::PyOSError;
 
     std::fs::create_dir_all(out_dir)
@@ -606,10 +606,14 @@ pub fn init_mcp(db_path: &str, out_dir: &str) -> PyResult<String> {
     let abs_db = absolutise(db_path);
     let abs_db_str = abs_db.to_string_lossy().to_string();
 
+    // The launcher command: the caller passes the absolute path to the `sylva`
+    // executable (so a venv install works without `sylva` being on the client's
+    // PATH); falls back to the bare name.
+    let cmd = command.unwrap_or("sylva");
     let config = json!({
         "mcpServers": {
             "sylva": {
-                "command": "sylva",
+                "command": cmd,
                 "args": ["serve", "--db", abs_db_str]
             }
         }

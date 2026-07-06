@@ -194,13 +194,22 @@ def main(argv=None):
         return 0
 
     if args.command == "init-mcp":
+        import shutil
+
+        # Resolve the absolute path to the `sylva` executable so the generated
+        # config launches correctly even when sylva lives in a venv that isn't on
+        # the MCP client's PATH.
+        bindir = os.path.dirname(sys.executable)
+        candidate = os.path.join(bindir, "sylva")
+        sylva_cmd = candidate if os.path.exists(candidate) else (shutil.which("sylva") or "sylva")
         try:
-            cfg = sylva.init_mcp(args.db, args.out)
+            cfg = sylva.init_mcp(args.db, args.out, sylva_cmd)
         except OSError as e:
             print(f"sylva: {e}", file=sys.stderr)
             return 1
-        print(f"sylva: wrote MCP scaffold -> {cfg}")
-        print("sylva: add its contents to your Claude Code / MCP client config to query this codebase.")
+        print(f"sylva: wrote MCP scaffold -> {cfg}  (command: {sylva_cmd})")
+        print("sylva: register it with your client, e.g.:")
+        print(f"       claude mcp add sylva -- {sylva_cmd} serve --db {os.path.abspath(args.db)}")
         return 0
 
     if args.command == "brief":

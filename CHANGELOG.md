@@ -5,6 +5,11 @@ grouped by the epics that shaped each line.
 
 ## 4.x — Polyglot analysis, executable MCP & full reporting
 
+- **4.8.1** — **`init-mcp` emits the absolute `sylva` path.** The generated
+  `mcp.json` now uses the absolute path to the `sylva` executable (resolved from
+  the running interpreter's venv) instead of the bare name, so the MCP server
+  launches even when `sylva` isn't on the client's PATH. `init-mcp` also prints a
+  ready-to-run `claude mcp add …` command.
 - **4.8.0** — **View picker + Classes & Layers views.** A single **View**
   chooser in the sidebar switches between every way of seeing the code:
   **Overview** (high-level flow), **Modules** (packages by connection),

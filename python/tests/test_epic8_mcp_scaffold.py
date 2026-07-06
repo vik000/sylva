@@ -49,6 +49,17 @@ class TestScaffold:
         assert os.path.isabs(db_arg)  # absolute so it works from any client cwd
         assert os.path.samefile(db_arg, str(db))
 
+    def test_absolute_command_emitted(self, tmp_path):
+        # An explicit command (the absolute path to the sylva executable) is
+        # written verbatim, so a venv install launches without being on PATH.
+        db = _init(tmp_path)
+        out = tmp_path / ".codemcp"
+        exe = "/opt/proj/.venv/bin/sylva"
+        cfg_path = sylva.init_mcp(str(db), str(out), exe)
+        with open(cfg_path) as f:
+            cfg = json.load(f)
+        assert cfg["mcpServers"]["sylva"]["command"] == exe
+
     def test_relative_db_is_absolutised(self, tmp_path, monkeypatch):
         db = _init(tmp_path)
         monkeypatch.chdir(tmp_path)
