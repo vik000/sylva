@@ -151,6 +151,8 @@ client's own config. The assistant can then call these tools:
 
 | Tool | Answers |
 |---|---|
+| `get_overview` | **start here** — archetype, entrypoints, layers, top modules, hubs, spine, in one call |
+| `get_outline` | a file's **skeleton** — every symbol's signature + docstring + line span, **no bodies** |
 | `search_symbol` | where is this symbol defined? |
 | `get_source` | show me its actual current code |
 | `get_callers` / `get_dependencies` | who calls it / what does it use? |
@@ -165,6 +167,13 @@ client's own config. The assistant can then call these tools:
 
 The server speaks the MCP handshake (`initialize` / `tools/list` / `tools/call`)
 and plain JSON-RPC.
+
+**Navigate, don't read.** The efficient loop for an agent is `get_overview` to
+orient → `get_outline` to see a file's shape → `get_source` to pull *only* the
+one function it needs. That traverses the deterministic tree instead of opening
+whole files — far fewer tokens, and the structure is exact (never a guessed
+edge). Sylva builds and exposes the tree; the agent builds its understanding on
+top.
 
 ### Let an agent *call* your code
 

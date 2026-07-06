@@ -5,6 +5,13 @@ grouped by the epics that shaped each line.
 
 ## 4.x — Polyglot analysis, executable MCP & full reporting
 
+- **4.12.0** — **Epic 11: token-efficient traversal.** Two MCP tools so an
+  agent navigates the tree instead of reading files: **`get_overview`** (one-call
+  orientation — archetype, entrypoints, layers, modules, hubs, spine) and
+  **`get_outline`** (a file's skeleton — every symbol's signature, docstring, and
+  span, *no bodies*). Also fixes relative-path resolution so `get_source` /
+  `get_outline` read source regardless of the server's cwd. Sylva stays
+  deterministic — it exposes the exact tree; the agent builds understanding on top.
 - **4.11.0** — **`sylva serve-functions`: run the function server directly.**
   Instead of generating a file, serve the allowlisted functions live — the
   server reads the allowlist (inline `--functions`/`--module` or `expose.toml`)

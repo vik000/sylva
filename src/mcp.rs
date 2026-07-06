@@ -207,6 +207,23 @@ fn test_coverage_query(db_path: &str, name: &str) -> Result<Value, String> {
     Ok(Value::Array(out))
 }
 
+/// Resolve a (possibly relative) graph file path to something readable. Graph
+/// paths are relative to the analysis root; the db lives at `<root>/.codemcp/
+/// sylva.db`, so a relative path is retried against `<root>` (two levels up from
+/// the db) when it doesn't resolve from the server's cwd.
+fn resolve_source_path(db_path: &str, path: &str) -> String {
+    if Path::new(path).exists() {
+        return path.to_string();
+    }
+    if let Some(root) = Path::new(db_path).parent().and_then(|p| p.parent()) {
+        let joined = root.join(path);
+        if joined.exists() {
+            return joined.to_string_lossy().into_owned();
+        }
+    }
+    path.to_string()
+}
+
 /// Read a 1-based inclusive line span from a file, returning the joined source.
 /// A span past EOF yields the empty string; an end beyond the file is clamped.
 /// Feature 8.4: source is read on demand, so it always reflects the current file.
@@ -256,7 +273,7 @@ fn source_by_name(db_path: &str, name: &str) -> Result<Value, String> {
         let (sname, kind, file, start, end) =
             row.map_err(|e| format!("failed to read row: {}", e))?;
         let end = end.unwrap_or(start); // NULL line_end → single-line span
-        let code = read_span(&file, start, end)?;
+        let code = read_span(&resolve_source_path(db_path, &file), start, end)?;
         out.push(json!({
             "name": sname, "kind": kind, "file": file,
             "line_start": start, "line_end": end, "code": code,
@@ -347,7 +364,17 @@ fn tools_list() -> Value {
                   "start": { "type": "integer", "description": "1-based start line (range form)" },
                   "end": { "type": "integer", "description": "1-based end line, inclusive (range form)" }
               }
-          }) }
+          }) },
+        { "name": "get_outline", "description": "A file's skeleton: every function/class with its signature, docstring, and line span, but no bodies — read a file's shape without its full source.",
+          "inputSchema": json!({
+              "type": "object",
+              "properties": {
+                  "file": { "type": "string", "description": "File path or filename fragment (best match wins)" }
+              },
+              "required": ["file"]
+          }) },
+        { "name": "get_overview", "description": "One-call orientation: archetype, primary + ranked entrypoints, per-layer counts, top modules, hubs, and the main spine.",
+          "inputSchema": json!({ "type": "object", "properties": {} }) }
     ])
 }
 
@@ -408,6 +435,110 @@ fn name_from(params: &Value) -> Option<&str> {
 /// plain-method framing and `tools/call` so both behave identically. The
 /// graph-traversal tools (Feature 8.2) reuse the existing PyO3 functions and
 /// convert their results, rather than re-implementing traversal here.
+/// `get_outline` — the skeleton of a file: every function/class with its
+/// signature line, docstring, and span, but **no bodies**. Lets an agent read a
+/// file's shape without pulling its full source (the big token saver). `target`
+/// is a path or filename fragment; the best (shortest) matching file wins.
+fn outline_query(db_path: &str, target: &str) -> Result<Value, String> {
+    let conn = open_db(db_path)?;
+    let (file_id, path) = {
+        let mut stmt = conn
+            .prepare("SELECT id, path FROM files WHERE path = ?1 OR path LIKE '%' || ?1 ORDER BY length(path) LIMIT 1")
+            .map_err(|e| format!("failed to prepare query: {}", e))?;
+        let mut rows = stmt
+            .query_map(params![target], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+            .map_err(|e| format!("query failed: {}", e))?;
+        match rows.next() {
+            Some(r) => r.map_err(|e| format!("failed to read row: {}", e))?,
+            None => return Err(format!("no indexed file matching '{}'", target)),
+        }
+    };
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT name, kind, line_start, line_end, docstring FROM symbols \
+             WHERE file_id = ?1 AND kind IN ('function', 'class') ORDER BY line_start",
+        )
+        .map_err(|e| format!("failed to prepare query: {}", e))?;
+    let rows = stmt
+        .query_map(params![file_id], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<i64>>(2)?,
+                r.get::<_, Option<i64>>(3)?,
+                r.get::<_, Option<String>>(4)?,
+            ))
+        })
+        .map_err(|e| format!("query failed: {}", e))?;
+
+    // Read the source once for signature lines (best-effort: skip if unreadable).
+    let content = std::fs::read_to_string(resolve_source_path(db_path, &path)).unwrap_or_default();
+    let lines: Vec<&str> = content.lines().collect();
+
+    let mut syms = Vec::new();
+    for row in rows {
+        let (name, kind, ls, le, doc) = row.map_err(|e| format!("failed to read row: {}", e))?;
+        let signature = ls
+            .and_then(|l| lines.get((l as usize).saturating_sub(1)))
+            .map(|s| s.trim().to_string());
+        syms.push(json!({
+            "name": name, "kind": kind,
+            "line_start": ls, "line_end": le,
+            "signature": signature, "docstring": doc,
+        }));
+    }
+    Ok(json!({ "file": path, "symbols": syms }))
+}
+
+/// `get_overview` — a one-call orientation map: archetype, the primary + ranked
+/// entrypoints, per-layer symbol counts, top modules, hubs, and the main spine.
+/// Composes the existing analyses so an agent orients in a single round-trip.
+fn overview(py: Python<'_>, db_path: &str) -> Result<Value, (i64, String)> {
+    let arch = crate::architecture::get_architecture(py, db_path, 8)
+        .map(|r| py_to_json(r.bind(py))).map_err(|e| pyerr_to_rpc(py, e))?;
+    let eps = crate::entrypoints::infer_entrypoints(py, db_path)
+        .map(|r| py_to_json(r.bind(py))).map_err(|e| pyerr_to_rpc(py, e))?;
+    let layers = crate::layers::infer_layers(py, db_path)
+        .map(|r| py_to_json(r.bind(py))).map_err(|e| pyerr_to_rpc(py, e))?;
+    let spine = crate::spine::main_spine(py, db_path, None)
+        .map(|r| py_to_json(r.bind(py))).map_err(|e| pyerr_to_rpc(py, e))?;
+
+    let primary = eps
+        .as_array()
+        .and_then(|a| a.iter().find(|e| e.get("primary").and_then(Value::as_bool) == Some(true)))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let top_eps: Vec<Value> = eps
+        .as_array()
+        .map(|a| a.iter().take(8).cloned().collect())
+        .unwrap_or_default();
+    let mut layer_counts = serde_json::Map::new();
+    if let Some(items) = layers.get("layers").and_then(Value::as_array) {
+        for it in items {
+            if let Some(l) = it.get("layer").and_then(Value::as_str) {
+                let n = layer_counts.get(l).and_then(Value::as_i64).unwrap_or(0) + 1;
+                layer_counts.insert(l.to_string(), json!(n));
+            }
+        }
+    }
+    let spine_syms: Vec<Value> = spine
+        .get("nodes")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(|n| n.get("symbol").cloned()).collect())
+        .unwrap_or_default();
+
+    Ok(json!({
+        "archetype": layers.get("archetype").cloned().unwrap_or(Value::Null),
+        "primary_entrypoint": primary,
+        "entrypoints": top_eps,
+        "layers": layer_counts,
+        "modules": arch.get("modules").cloned().unwrap_or(Value::Null),
+        "hubs": arch.get("hubs").cloned().unwrap_or(Value::Null),
+        "spine": spine_syms,
+    }))
+}
+
 fn dispatch_tool(
     py: Python<'_>,
     db_path: &str,
@@ -496,6 +627,18 @@ fn dispatch_tool(
         "suggest_test_targets" => crate::testtargets::suggest_test_targets(py, db_path)
             .map(|r| py_to_json(r.bind(py)))
             .map_err(|e| pyerr_to_rpc(py, e)),
+
+        // --- Epic 11: token-efficient traversal ---------------------------
+        "get_outline" => {
+            let target = args
+                .get("file")
+                .or_else(|| args.get("name"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| (INVALID_PARAMS, "Invalid params: expected a 'file' string".to_string()))?;
+            outline_query(db_path, target).map_err(|m| (SERVER_ERROR, m))
+        }
+        "get_overview" => overview(py, db_path),
+
         other => Err((METHOD_NOT_FOUND, format!("Unknown tool: {}", other))),
     }
 }
