@@ -293,6 +293,25 @@ fn source_range(file: &str, start: i64, end: i64) -> Result<Value, String> {
 /// The MCP protocol version this server advertises in `initialize`.
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 
+/// Surfaced to the model on connect (MCP `initialize.instructions`). Frames the
+/// graph-first workflow so the agent navigates the exact tree instead of reading
+/// whole files — the token-efficient path.
+const INSTRUCTIONS: &str = "\
+Sylva exposes this codebase as an exact, queryable knowledge graph (tree-sitter — \
+no guessed relationships). Prefer navigating the graph over opening whole files: \
+it is precise and far cheaper in tokens.
+
+Recommended loop:
+1. get_overview — orient: archetype, entrypoints, architectural layers, hubs, main spine.
+2. list_symbols — enumerate what exists (filter by file/kind; no source read).
+3. get_outline(file) — a file's skeleton: signatures, docstrings, spans — no bodies.
+4. neighborhood / trace_calls / blast_radius — how symbols connect (local structure, \
+call flow, impact).
+5. get_source(name) — read ONLY the specific function you need, not the whole file.
+
+Rule of thumb: reach for get_outline + get_source before opening a file. Use \
+get_overview once to orient before diving in.";
+
 /// The advertised tool catalogue for `tools/list`: name, description, and a JSON
 /// Schema for each tool's arguments. Every tool here is dispatchable by both the
 /// plain method framing and `tools/call`.
@@ -846,7 +865,8 @@ pub fn handle_request(py: Python<'_>, db_path: &str, request: &str) -> String {
                 json!({
                     "protocolVersion": MCP_PROTOCOL_VERSION,
                     "capabilities": { "tools": {} },
-                    "serverInfo": { "name": "sylva", "version": env!("CARGO_PKG_VERSION") }
+                    "serverInfo": { "name": "sylva", "version": env!("CARGO_PKG_VERSION") },
+                    "instructions": INSTRUCTIONS
                 }),
             );
         }

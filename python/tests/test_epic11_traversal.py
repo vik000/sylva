@@ -92,3 +92,24 @@ class TestAdvertised:
         assert {"get_outline", "get_overview"} <= names
         outline = next(t for t in tools if t["name"] == "get_outline")
         assert outline["inputSchema"]["required"] == ["file"]
+
+
+class TestFraming:
+    """Pillar 4 — graph-first framing so the agent navigates instead of reading."""
+
+    def test_initialize_carries_instructions(self, tmp_path):
+        db = tmp_path / "s.db"
+        sylva.init_db(str(db))
+        r = _rpc(db, "initialize", {"protocolVersion": "2024-11-05",
+                                    "capabilities": {}, "clientInfo": {"name": "c", "version": "1"}})
+        instr = r["result"]["instructions"]
+        assert "get_overview" in instr and "get_source" in instr
+        assert "whole files" in instr          # the "don't read files" nudge
+
+    def test_brief_has_agent_section(self, tmp_path):
+        from sylva.report import generate_brief
+
+        db, _ = _repo(tmp_path)
+        md = generate_brief(str(db))
+        assert "Exploring this repo with an agent" in md
+        assert "get_outline" in md and "get_source" in md

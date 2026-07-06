@@ -5,6 +5,12 @@ grouped by the epics that shaped each line.
 
 ## 4.x — Polyglot analysis, executable MCP & full reporting
 
+- **4.14.0** — **Epic 11: graph-first framing.** The MCP server now sends
+  `instructions` on `initialize` (surfaced to the model on connect) telling the
+  agent to navigate the graph — `get_overview` → `list_symbols`/`get_outline` →
+  `neighborhood`/`trace_calls` → `get_source` — instead of opening whole files.
+  `sylva brief` (SYLVA.md) gains a matching "Exploring this repo with an agent"
+  section. This is where the token savings actually get *used* by default.
 - **4.13.0** — **Epic 11: `list_symbols` + `neighborhood`.** Two more traversal
   tools: `list_symbols` (cheap graph-only inventory of functions/classes, filter
   by file/kind, no source read) and `neighborhood` (a symbol's N-hop undirected
