@@ -5,6 +5,10 @@ grouped by the epics that shaped each line.
 
 ## 4.x — Polyglot analysis, executable MCP & full reporting
 
+- **4.10.0** — **`sylva expose` is a one-liner.** Expose repo functions as
+  callable MCP tools inline with `--functions "pkg.mod:fn,..."` or `--module
+  pkg` — no `expose.toml` to hand-author in the analysed project. The allowlist
+  file still works for a larger, version-controlled surface.
 - **4.9.0** — **`init-mcp --mcp-json`: one-step Claude Code wiring.** `init-mcp`
   can now write (and merge into) a **root `.mcp.json`** that Claude Code
   auto-loads — no manual `claude mcp add`. Existing servers in the file are

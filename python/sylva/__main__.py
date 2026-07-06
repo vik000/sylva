@@ -160,6 +160,8 @@ def main(argv=None):
     )
     ex2.add_argument("--root", required=True, help="Project root")
     ex2.add_argument("--db", default=DEFAULT_DB, help=f"Graph database path (default {DEFAULT_DB})")
+    ex2.add_argument("--functions", help="Comma-separated `module:function` targets to expose inline (no expose.toml needed)")
+    ex2.add_argument("--module", dest="modules", help="Comma-separated modules whose public functions to expose")
     ex2.add_argument("--config", help="Allowlist file (default <root>/.codemcp/expose.toml)")
     ex2.add_argument("--out", help="Output server file (default <root>/.codemcp/functions_server.py)")
 
@@ -383,14 +385,21 @@ def main(argv=None):
         if not os.path.isdir(args.root):
             print(f"sylva: not a directory: {args.root}", file=sys.stderr)
             return 1
-        config = args.config or os.path.join(args.root, ".codemcp", "expose.toml")
-        allowlist = {"functions": [], "modules": []}
-        if os.path.isfile(config):
-            with open(config) as f:
-                allowlist = parse_allowlist(f.read())
+        # Inline `--functions` / `--module` win (a one-line command, no file to
+        # author); otherwise fall back to the allowlist file.
+        _split = lambda s: [x.strip() for x in (s or "").split(",") if x.strip()]
+        if args.functions or args.modules:
+            allowlist = {"functions": _split(args.functions), "modules": _split(args.modules)}
         else:
-            print(f"sylva: no allowlist at {config} — generating an empty server. "
-                  "List functions/modules there to expose them.", file=sys.stderr)
+            config = args.config or os.path.join(args.root, ".codemcp", "expose.toml")
+            allowlist = {"functions": [], "modules": []}
+            if os.path.isfile(config):
+                with open(config) as f:
+                    allowlist = parse_allowlist(f.read())
+            else:
+                print(f"sylva: nothing to expose — pass --functions/--module inline, "
+                      f"e.g. `--functions 'pkg.mod:fn'`, or list them in {config}.",
+                      file=sys.stderr)
         db = args.db if args.db != DEFAULT_DB else os.path.join(args.root, DEFAULT_DB)
         try:
             code, count, warnings = generate_server(db, args.root, allowlist)

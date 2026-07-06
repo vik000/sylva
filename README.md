@@ -169,20 +169,23 @@ and plain JSON-RPC.
 ### Let an agent *call* your code
 
 `init-mcp` gives an assistant **query** access to the graph. To let it **execute**
-selected functions from the repo, use an **allowlist** — nothing is exposed by
-default:
+selected functions, expose them — **one line, nothing exposed by default:**
 
 ```bash
-# .codemcp/expose.toml
-functions = ["mypkg.api:create_user", "mypkg.api:delete_user"]
-modules   = ["mypkg.public"]         # shorthand: a module's public functions
-
-sylva expose --root .                # writes a standalone, reviewable MCP server
+sylva expose --root . --functions "mypkg.api:create_user,mypkg.api:delete_user"
+# …or a whole module's public functions:
+sylva expose --root . --module mypkg.public
 ```
 
-Sylva only *generates* the server file (its tool schemas come from each
-function's live signature); **you review and run it** — Sylva executes nothing.
-Language-neutral by design (Python execution backend first).
+This writes a standalone, **reviewable** MCP server (`.codemcp/functions_server.py`)
+whose tools are exactly those functions, argument schemas derived from each
+function's live signature. **You review and run it** — Sylva only *generates*, it
+executes nothing. Register the generated server with your client the same way as
+`init-mcp` (point `.mcp.json` at `python .codemcp/functions_server.py`).
+
+For a larger, version-controlled surface, list targets in `.codemcp/expose.toml`
+(`functions = [...]` / `modules = [...]`) instead of the flags. Language-neutral
+by design (Python execution backend first).
 
 ---
 

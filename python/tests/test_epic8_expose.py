@@ -55,6 +55,31 @@ def _exec_server(code, root):
     return ns
 
 
+class TestInlineCli:
+    """The one-line path: expose functions inline, no expose.toml to author."""
+
+    def test_functions_flag_no_toml(self, tmp_path):
+        db = _init(tmp_path)
+        _index(db, tmp_path / "mymod.py", MYMOD)
+        out = tmp_path / "server.py"
+        rc = cli.main(["expose", "--root", str(tmp_path), "--db", str(db),
+                       "--functions", "mymod:add", "--out", str(out)])
+        assert rc == 0
+        assert "from mymod import add as" in out.read_text()
+        assert not (tmp_path / ".codemcp" / "expose.toml").exists()  # nothing authored
+
+    def test_module_flag_exposes_public(self, tmp_path):
+        db = _init(tmp_path)
+        _index(db, tmp_path / "utilpkg.py", UTILPKG)
+        out = tmp_path / "s.py"
+        rc = cli.main(["expose", "--root", str(tmp_path), "--db", str(db),
+                       "--module", "utilpkg", "--out", str(out)])
+        assert rc == 0
+        code = out.read_text()
+        assert "from utilpkg import helper as" in code   # public fn exposed
+        assert "import _private" not in code              # private excluded
+
+
 class TestGenerate:
     def test_only_allowlisted_exposed(self, tmp_path):
         db = _init(tmp_path)
