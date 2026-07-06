@@ -55,6 +55,48 @@ def _exec_server(code, root):
     return ns
 
 
+class TestRuntimeServe:
+    """`serve-functions`: read the allowlist and serve those functions live,
+    no generated file. The allowlist is the reviewable surface."""
+
+    def _cleanup(self, tmp_path, *mods):
+        if str(tmp_path) in sys.path:
+            sys.path.remove(str(tmp_path))
+        for m in mods:
+            sys.modules.pop(m, None)
+
+    def test_serves_allowlisted_live(self, tmp_path):
+        from sylva.expose import build_tools, rt_handle
+
+        db = _init(tmp_path)
+        _index(db, tmp_path / "mymod.py", MYMOD)
+        tools, _ = build_tools(str(db), str(tmp_path), {"functions": ["mymod:add"]})
+        try:
+            assert "add" in tools and "secret" not in tools     # only allowlisted
+            tl = json.loads(rt_handle({"id": 1, "method": "tools/list"}, tools))
+            assert [t["name"] for t in tl["result"]["tools"]] == ["add"]
+            call = json.loads(rt_handle(
+                {"id": 2, "method": "tools/call",
+                 "params": {"name": "add", "arguments": {"a": 2, "b": 3}}}, tools))
+            assert call["result"]["content"][0]["text"] == "5"   # really executed
+            assert call["result"]["isError"] is False
+        finally:
+            self._cleanup(tmp_path, "mymod")
+
+    def test_unknown_tool_errors(self, tmp_path):
+        from sylva.expose import build_tools, rt_handle
+
+        db = _init(tmp_path)
+        _index(db, tmp_path / "mymod.py", MYMOD)
+        tools, _ = build_tools(str(db), str(tmp_path), {"functions": ["mymod:add"]})
+        try:
+            r = json.loads(rt_handle(
+                {"id": 1, "method": "tools/call", "params": {"name": "nope"}}, tools))
+            assert "error" in r
+        finally:
+            self._cleanup(tmp_path, "mymod")
+
+
 class TestInlineCli:
     """The one-line path: expose functions inline, no expose.toml to author."""
 

@@ -12,9 +12,11 @@ explicitly allowlisted. Python execution backend first (import + live
 can be added without changing the selection contract.
 """
 
+import json
 import os
 import re
 import sqlite3
+import sys
 
 
 def parse_allowlist(text):
@@ -108,7 +110,114 @@ def _resolve(db_path, root, allowlist):
     return targets, warnings
 
 
-# The runtime server logic — static, dependency-free. Token placeholders are
+# --------------------------------------------------------------------------- #
+# Runtime function server — read the allowlist and serve those functions live  #
+# (no generated file). The allowlist is the reviewable exposed surface.        #
+# --------------------------------------------------------------------------- #
+
+def _rt_schema(fn):
+    import inspect
+    props, required = {}, []
+    try:
+        sig = inspect.signature(fn)
+    except (ValueError, TypeError):
+        return {"type": "object", "properties": {}}
+    types = {int: "integer", float: "number", bool: "boolean", str: "string"}
+    for name, p in sig.parameters.items():
+        if p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD) or name in ("self", "cls"):
+            continue
+        props[name] = {"type": types.get(p.annotation, "string")}
+        if p.default is inspect.Parameter.empty:
+            required.append(name)
+    schema = {"type": "object", "properties": props}
+    if required:
+        schema["required"] = required
+    return schema
+
+
+def build_tools(db_path, root, allowlist):
+    """Resolve the allowlist and import each target → `({name: (fn, desc)}, warnings)`.
+    Importing happens here, at serve time, so the running server *is* the
+    allowlist — nothing is exposed that isn't listed."""
+    import importlib
+
+    targets, warnings = _resolve(db_path, root, allowlist)
+    root_abs = os.path.abspath(root)
+    if root_abs not in sys.path:
+        sys.path.insert(0, root_abs)
+    tools = {}
+    for module, fn, desc in targets:
+        try:
+            obj = getattr(importlib.import_module(module), fn)
+        except Exception as e:  # a bad target is skipped, not fatal
+            warnings.append(f"cannot import {module}.{fn}: {e}")
+            continue
+        tools[fn] = (obj, desc)
+    return tools, warnings
+
+
+def rt_handle(req, tools):
+    """Handle one MCP request against a live tools registry."""
+    id_ = req.get("id")
+    method = req.get("method")
+    if method == "initialize":
+        return _ok(id_, {"protocolVersion": "2024-11-05", "capabilities": {"tools": {}},
+                         "serverInfo": {"name": "sylva-functions", "version": "1"}})
+    if method in ("notifications/initialized", "initialized"):
+        return None
+    if method == "tools/list":
+        return _ok(id_, {"tools": [{"name": n, "description": d, "inputSchema": _rt_schema(f)}
+                                   for n, (f, d) in tools.items()]})
+    if method == "tools/call":
+        params = req.get("params") or {}
+        entry = tools.get(params.get("name"))
+        if entry is None:
+            return _err(id_, -32601, "Unknown tool: %s" % params.get("name"))
+        try:
+            result = entry[0](**(params.get("arguments") or {}))
+            return _ok(id_, {"content": [{"type": "text", "text": json.dumps(result, default=str)}],
+                             "isError": False})
+        except Exception as e:  # tool errors reported, not fatal
+            return _ok(id_, {"content": [{"type": "text", "text": "%s: %s" % (type(e).__name__, e)}],
+                             "isError": True})
+    return _err(id_, -32601, "Method not found: %s" % method)
+
+
+def _ok(id_, result):
+    return json.dumps({"jsonrpc": "2.0", "id": id_, "result": result})
+
+
+def _err(id_, code, msg):
+    return json.dumps({"jsonrpc": "2.0", "id": id_, "error": {"code": code, "message": msg}})
+
+
+def serve_functions(root, db_path, allowlist):
+    """Run an MCP stdio server exposing the allowlisted functions (imported at
+    runtime). Prints the exposed surface + any warnings to stderr for audit."""
+    tools, warnings = build_tools(db_path, root, allowlist)
+    sys.stderr.write("sylva: exposing %d function(s): %s\n"
+                     % (len(tools), ", ".join(sorted(tools)) or "(none)"))
+    for w in warnings:
+        sys.stderr.write("sylva: warning: %s\n" % w)
+    sys.stderr.flush()
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            req = json.loads(line)
+        except json.JSONDecodeError:
+            sys.stdout.write(_err(None, -32700, "Parse error") + "\n")
+            sys.stdout.flush()
+            continue
+        resp = rt_handle(req, tools)
+        if resp is not None:
+            sys.stdout.write(resp + "\n")
+            sys.stdout.flush()
+    return 0
+
+
+# The generated-server logic — static, dependency-free. Token placeholders are
 # substituted (not str.format) to avoid escaping the braces in generated code.
 _SERVER_TEMPLATE = '''#!/usr/bin/env python3
 """GENERATED BY SYLVA — do not edit by hand (regenerate with `sylva expose`).

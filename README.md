@@ -183,6 +183,15 @@ function's live signature. **You review and run it** — Sylva only *generates*,
 executes nothing. Register the generated server with your client the same way as
 `init-mcp` (point `.mcp.json` at `python .codemcp/functions_server.py`).
 
+**No file to manage?** `serve-functions` runs the server directly, reading the
+same allowlist at start-up (the allowlist stays your reviewable surface, and it
+prints the exposed functions on launch):
+
+```bash
+sylva serve-functions --root . --functions "mypkg.api:create_user"
+```
+Point `.mcp.json` at that command instead of a generated file.
+
 For a larger, version-controlled surface, list targets in `.codemcp/expose.toml`
 (`functions = [...]` / `modules = [...]`) instead of the flags. Language-neutral
 by design (Python execution backend first).

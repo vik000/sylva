@@ -5,6 +5,12 @@ grouped by the epics that shaped each line.
 
 ## 4.x — Polyglot analysis, executable MCP & full reporting
 
+- **4.11.0** — **`sylva serve-functions`: run the function server directly.**
+  Instead of generating a file, serve the allowlisted functions live — the
+  server reads the allowlist (inline `--functions`/`--module` or `expose.toml`)
+  at start-up and prints the exposed surface. The allowlist stays the reviewable
+  boundary; the generated-file path (`sylva expose`) remains for an auditable,
+  checked-in artifact.
 - **4.10.0** — **`sylva expose` is a one-liner.** Expose repo functions as
   callable MCP tools inline with `--functions "pkg.mod:fn,..."` or `--module
   pkg` — no `expose.toml` to hand-author in the analysed project. The allowlist

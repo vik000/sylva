@@ -165,6 +165,13 @@ def main(argv=None):
     ex2.add_argument("--config", help="Allowlist file (default <root>/.codemcp/expose.toml)")
     ex2.add_argument("--out", help="Output server file (default <root>/.codemcp/functions_server.py)")
 
+    sf = sub.add_parser("serve-functions", help="Run an MCP server exposing allowlisted repo functions (reads the allowlist live; no generated file)")
+    sf.add_argument("--root", required=True, help="Project root")
+    sf.add_argument("--db", default=DEFAULT_DB, help=f"Graph database path (default {DEFAULT_DB})")
+    sf.add_argument("--functions", help="Comma-separated `module:function` targets to expose inline")
+    sf.add_argument("--module", dest="modules", help="Comma-separated modules whose public functions to expose")
+    sf.add_argument("--config", help="Allowlist file (default <root>/.codemcp/expose.toml)")
+
     args = parser.parse_args(argv)
 
     # Bare `sylva` (no command): show the quickstart + available commands, then
@@ -415,6 +422,30 @@ def main(argv=None):
         print(f"sylva: wrote MCP function server ({count} tool(s)) -> {out}")
         print(f"sylva: REVIEW it (it executes these functions), then run:  python {out}")
         return 0
+
+    if args.command == "serve-functions":
+        from .expose import parse_allowlist, serve_functions
+
+        if not os.path.isdir(args.root):
+            print(f"sylva: not a directory: {args.root}", file=sys.stderr)
+            return 1
+        _split = lambda s: [x.strip() for x in (s or "").split(",") if x.strip()]
+        if args.functions or args.modules:
+            allowlist = {"functions": _split(args.functions), "modules": _split(args.modules)}
+        else:
+            config = args.config or os.path.join(args.root, ".codemcp", "expose.toml")
+            if not os.path.isfile(config):
+                print(f"sylva: nothing to expose — pass --functions/--module, or list them in {config}.",
+                      file=sys.stderr)
+                return 1
+            with open(config) as f:
+                allowlist = parse_allowlist(f.read())
+        db = args.db if args.db != DEFAULT_DB else os.path.join(args.root, DEFAULT_DB)
+        try:
+            return serve_functions(args.root, db, allowlist)
+        except FileNotFoundError as e:
+            print(f"sylva: {e}", file=sys.stderr)
+            return 1
 
     if args.command == "onboard":
         from .onboard import onboard
